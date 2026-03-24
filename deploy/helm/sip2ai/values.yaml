@@ -1,0 +1,68 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/dmitry-sinina/sip2ai
+  tag: ""  # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  sipPort: 5060
+  sipProtocol: UDP
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# sip2ai config.yaml content — rendered as a ConfigMap.
+config:
+  sip:
+    bind_host: "0.0.0.0"
+    bind_port: 5060
+    transport: "udp"
+    external_host: ""
+    external_port: 0
+    media_external_ip: ""
+  log:
+    format: "text"
+    level: "warn"
+  ai:
+    provider: "openai"
+    reconnect_retries: 3
+    reconnect_delay_ms: 1000
+    dump_audio: false
+  openai:
+    model: "gpt-4o-realtime-preview"
+    voice: "alloy"
+    system_prompt: "You are a helpful voice assistant."
+    greeting: "Hello, how can I help you today?"
+  deepgram:
+    listen_model: "nova-3"
+    think_model: "gpt-4o-mini"
+    speak_model: "aura-2-thalia-en"
+    language: "en"
+    greeting: "Hello, how can I help you?"
+  gemini:
+    model: "gemini-2.5-flash-native-audio-preview-12-2025"
+    system_prompt: "You are a helpful voice assistant."
+  transfers: {}
+
+# API keys — reference existing Kubernetes secrets.
+# The secret must have keys matching the provider name (e.g. "openai", "deepgram", "gemini").
+existingSecret: ""
+
+# Inline secret creation (not recommended for production).
+secrets:
+  openai: ""
+  deepgram: ""
+  gemini: ""

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sip2ai.fullname" . }}
+  labels:
+    {{- include "sip2ai.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  clusterIP: None
+  ports:
+    - name: sip
+      port: {{ .Values.service.sipPort }}
+      targetPort: sip
+      protocol: {{ .Values.service.sipProtocol }}
+  selector:
+    {{- include "sip2ai.selectorLabels" . | nindent 4 }}

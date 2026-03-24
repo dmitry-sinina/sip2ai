@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sip2ai
+description: SIP-to-AI voice bridge
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
