@@ -1,12 +1,10 @@
 sip:
-  bind_host: "127.0.0.1"
-  bind_port: 6060
+  bind_host: "0.0.0.0"
+  bind_port: 5060
   transport: "udp"
-  external_host: ""
-  external_port: 0
-  media_external_ip: ""
-
-
+  # external_host: ""
+  # external_port: 0
+  # media_external_ip: ""
 
 log:
   format: "text"
@@ -19,9 +17,10 @@ log:
 
 ai:
   provider: "openai"
+  connect_timeout_ms: 5000
   reconnect_retries: 3
   reconnect_delay_ms: 1000
-  dump_audio: true
+  # dump_audio: false
 
 openai:
   api_key: ""
@@ -29,6 +28,7 @@ openai:
   voice: "alloy"
   system_prompt: "You are a helpful voice assistant."
   greeting: "Hello, how can I help you today?"
+  # proxy: "http://proxy.example.com:8080"
 
 deepgram:
   api_key: ""
@@ -37,12 +37,14 @@ deepgram:
   speak_model: "aura-2-thalia-en"
   language: "en"
   greeting: "Hello, how can I help you?"
+  # proxy: "http://proxy.example.com:8080"
 
 gemini:
   api_key: ""
   model: "gemini-2.5-flash-native-audio-preview-12-2025"
   system_prompt: "You are a helpful voice assistant."
+  # proxy: "http://proxy.example.com:8080"
 
-transfers:
-  sales: "tel:+12025551234"
-  support: "sip:support@pbx.example.com"
+# transfers:
+#   sales: "tel:+12025551234"
+#   support: "sip:support@pbx.example.com"

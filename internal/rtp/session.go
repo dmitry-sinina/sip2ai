@@ -19,9 +19,13 @@ const levelTrace = slog.Level(-8)
 // ConnectWithRetry connects provider to the AI backend, retrying on failure.
 // It is called before Answer() so the call is only accepted once AI is ready.
 func ConnectWithRetry(ctx context.Context, provider ai.AIProvider, cfg config.AIConfig, logger *slog.Logger) error {
+	timeout := time.Duration(cfg.ConnectTimeoutMs) * time.Millisecond
 	delay := time.Duration(cfg.ReconnectDelayMs) * time.Millisecond
 	for attempt := 0; attempt <= cfg.ReconnectRetries; attempt++ {
-		if err := provider.Connect(ctx); err == nil {
+		connectCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := provider.Connect(connectCtx)
+		cancel()
+		if err == nil {
 			return nil
 		} else if attempt == cfg.ReconnectRetries {
 			return fmt.Errorf("AI connect after %d retries: %w", attempt, err)

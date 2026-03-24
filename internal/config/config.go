@@ -38,6 +38,7 @@ type SIPConfig struct {
 
 type AIConfig struct {
 	Provider          string `yaml:"provider"`
+	ConnectTimeoutMs  int    `yaml:"connect_timeout_ms"`
 	ReconnectRetries  int    `yaml:"reconnect_retries"`
 	ReconnectDelayMs  int    `yaml:"reconnect_delay_ms"`
 	DumpAudio         bool   `yaml:"dump_audio"`
@@ -152,6 +153,7 @@ func Load(path string) (*Config, error) {
 	cfg.Log.Format = "text"
 	cfg.Log.Level = "warn"
 	cfg.AI.Provider = "openai"
+	cfg.AI.ConnectTimeoutMs = 5000
 	cfg.AI.ReconnectRetries = 3
 	cfg.AI.ReconnectDelayMs = 1000
 	cfg.OpenAI.Model = "gpt-4o-realtime-preview"
