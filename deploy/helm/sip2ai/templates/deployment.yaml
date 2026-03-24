@@ -29,6 +29,10 @@ spec:
               containerPort: {{ .Values.config.sip.bind_port }}
               protocol: {{ .Values.service.sipProtocol }}
           env:
+            - name: SIP_BIND_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

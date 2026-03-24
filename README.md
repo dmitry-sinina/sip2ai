@@ -34,3 +34,59 @@ Or run directly without a binary:
 go run ./cmd/sip2ai
 ```
 
+---
+
+## Kubernetes (Helm)
+
+Install from OCI registry:
+
+```bash
+helm install sip2ai oci://ghcr.io/<owner>/charts/sip2ai \
+  --version 1.0.0 \
+  --set secrets.openai=sk-... \
+  --set config.ai.provider=openai
+```
+
+Or from local checkout:
+
+```bash
+helm install sip2ai deploy/helm/sip2ai \
+  --set secrets.openai=sk-...
+```
+
+### Using an existing secret
+
+Create a secret with provider API keys:
+
+```bash
+kubectl create secret generic sip2ai-keys \
+  --from-literal=openai=sk-... \
+  --from-literal=deepgram=... \
+  --from-literal=gemini=...
+```
+
+Then reference it:
+
+```bash
+helm install sip2ai deploy/helm/sip2ai \
+  --set existingSecret=sip2ai-keys
+```
+
+### Override config values
+
+All fields under `config:` in `values.yaml` map directly to `config.yaml`:
+
+```bash
+helm install sip2ai deploy/helm/sip2ai \
+  --set config.ai.provider=openai \
+  --set config.openai.voice=shimmer \
+  --set config.log.level=debug \
+  --set "config.openai.system_prompt=You are a sales agent."
+```
+
+### Uninstall
+
+```bash
+helm uninstall sip2ai
+```
+

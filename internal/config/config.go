@@ -174,7 +174,16 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	// Environment variables override config file for secrets.
+	// Environment variables override config file.
+	if v := os.Getenv("SIP_BIND_HOST"); v != "" {
+		cfg.SIP.BindHost = v
+	}
+	if v := os.Getenv("SIP_EXTERNAL_HOST"); v != "" {
+		cfg.SIP.ExternalHost = v
+	}
+	if v := os.Getenv("SIP_MEDIA_EXTERNAL_IP"); v != "" {
+		cfg.SIP.MediaExternalIP = v
+	}
 	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 		cfg.OpenAI.APIKey = v
 	}
