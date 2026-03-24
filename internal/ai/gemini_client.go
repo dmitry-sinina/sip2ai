@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -48,8 +50,20 @@ func newGeminiClient(cfg *config.GeminiConfig, logger *slog.Logger, logMedia boo
 }
 
 func (c *geminiClient) Connect(ctx context.Context) error {
-	url := fmt.Sprintf("%s?key=%s", geminiEndpoint, c.cfg.APIKey)
-	conn, _, err := websocket.Dial(ctx, url, nil)
+	wsURL := fmt.Sprintf("%s?key=%s", geminiEndpoint, c.cfg.APIKey)
+	var dialOpts *websocket.DialOptions
+	if c.cfg.Proxy != "" {
+		proxyURL, err := url.Parse(c.cfg.Proxy)
+		if err != nil {
+			return fmt.Errorf("gemini proxy URL: %w", err)
+		}
+		dialOpts = &websocket.DialOptions{
+			HTTPClient: &http.Client{
+				Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+			},
+		}
+	}
+	conn, _, err := websocket.Dial(ctx, wsURL, dialOpts)
 	if err != nil {
 		return fmt.Errorf("gemini dial: %w", err)
 	}

@@ -19,6 +19,9 @@ import (
 // LevelTrace is below slog.LevelDebug, used for audio frame and payload logs.
 const LevelTrace = slog.Level(-8)
 
+// version is set via -ldflags at build time.
+var version = "dev"
+
 func main() {
 	logFormat        := flag.String("log-format",         "",     "Log format (text|json), overrides config")
 	logLevel         := flag.String("log-level",          "",     "Default log level, overrides config (trace|debug|info|warn|error)")
@@ -134,7 +137,7 @@ func main() {
 		return p
 	}
 
-	server, err := sip.NewServer(cfg, aiFactory, sipLogger)
+	server, err := sip.NewServer(cfg, aiFactory, sipLogger, version)
 	if err != nil {
 		slog.Error("SIP server creation failed", "err", err)
 		os.Exit(1)
@@ -143,7 +146,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("sip2ai starting", "provider", cfg.AI.Provider, "log_level", cfg.Log.Level)
+	slog.Info("sip2ai starting", "version", version, "provider", cfg.AI.Provider, "log_level", cfg.Log.Level)
 	if err := server.Start(ctx); err != nil {
 		slog.Error("server error", "err", err)
 		os.Exit(1)

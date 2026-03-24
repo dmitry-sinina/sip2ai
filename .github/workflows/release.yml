@@ -22,12 +22,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version:.*/version: ${VERSION}/" deploy/helm/sip2ai/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deploy/helm/sip2ai/Chart.yaml
+
       - name: Build binary
         env:
           CGO_ENABLED: "0"
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          go build -ldflags="-s -w" -o sip2ai ./cmd/sip2ai
+          go build -ldflags="-s -w -X main.version=${VERSION}" -o sip2ai ./cmd/sip2ai
 
       - name: Build deb package
         run: |
@@ -98,3 +104,9 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Package and push Helm chart
+        run: |
+          helm package deploy/helm/sip2ai
+          echo ${{ secrets.GITHUB_TOKEN }} | helm registry login ${REGISTRY} -u ${{ github.actor }} --password-stdin
+          helm push sip2ai-*.tgz oci://${REGISTRY}/${{ github.repository_owner }}/charts

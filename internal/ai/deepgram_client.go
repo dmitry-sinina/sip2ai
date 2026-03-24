@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -71,7 +73,15 @@ func (c *deepgramClient) Connect(ctx context.Context) error {
 	}
 	c.handler = agentchannel.NewDefaultChanHandler()
 
-	ws, err := agentws.NewUsingChanWithDefaults(ctx, settings, c.handler)
+	cOpts := &clientv1.ClientOptions{}
+	if c.cfg.Proxy != "" {
+		proxyURL, err := url.Parse(c.cfg.Proxy)
+		if err != nil {
+			return fmt.Errorf("deepgram proxy URL: %w", err)
+		}
+		cOpts.Proxy = http.ProxyURL(proxyURL)
+	}
+	ws, err := agentws.NewUsingChan(ctx, c.cfg.APIKey, cOpts, settings, c.handler)
 	if err != nil {
 		return fmt.Errorf("deepgram new client: %w", err)
 	}

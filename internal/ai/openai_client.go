@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -61,13 +63,23 @@ func (c *openAIClient) TransferCh() <-chan TransferRequest {
 }
 
 func (c *openAIClient) Connect(ctx context.Context) error {
-	url := fmt.Sprintf("%s?model=%s", openAIEndpoint, c.cfg.Model)
-	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
+	wsURL := fmt.Sprintf("%s?model=%s", openAIEndpoint, c.cfg.Model)
+	dialOpts := &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
 			"Authorization": {"Bearer " + c.cfg.APIKey},
 			"OpenAI-Beta":   {"realtime=v1"},
 		},
-	})
+	}
+	if c.cfg.Proxy != "" {
+		proxyURL, err := url.Parse(c.cfg.Proxy)
+		if err != nil {
+			return fmt.Errorf("openai proxy URL: %w", err)
+		}
+		dialOpts.HTTPClient = &http.Client{
+			Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		}
+	}
+	conn, _, err := websocket.Dial(ctx, wsURL, dialOpts)
 	if err != nil {
 		return fmt.Errorf("openai dial: %w", err)
 	}

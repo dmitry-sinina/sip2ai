@@ -50,6 +50,7 @@ type OpenAIConfig struct {
 	Voice        string `yaml:"voice"`
 	SystemPrompt string `yaml:"system_prompt"`
 	Greeting     string `yaml:"greeting"`
+	Proxy        string `yaml:"proxy"`
 }
 
 type DeepgramConfig struct {
@@ -59,12 +60,14 @@ type DeepgramConfig struct {
 	SpeakModel   string `yaml:"speak_model"`
 	Language     string `yaml:"language"`
 	Greeting     string `yaml:"greeting"`
+	Proxy        string `yaml:"proxy"`
 }
 
 type GeminiConfig struct {
 	APIKey       string `yaml:"api_key"`
 	Model        string `yaml:"model"`
 	SystemPrompt string `yaml:"system_prompt"`
+	Proxy        string `yaml:"proxy"`
 }
 
 // CallOverride contains per-call settings from the X-Sip2ai-Config SIP header.
@@ -169,6 +172,17 @@ func Load(path string) (*Config, error) {
 				return nil, fmt.Errorf("parse config: %w", err)
 			}
 		}
+	}
+
+	// Environment variables override config file for secrets.
+	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		cfg.OpenAI.APIKey = v
+	}
+	if v := os.Getenv("DEEPGRAM_API_KEY"); v != "" {
+		cfg.Deepgram.APIKey = v
+	}
+	if v := os.Getenv("GEMINI_API_KEY"); v != "" {
+		cfg.Gemini.APIKey = v
 	}
 
 	return cfg, nil
