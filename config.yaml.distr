@@ -1,0 +1,48 @@
+sip:
+  bind_host: "127.0.0.1"
+  bind_port: 6060
+  transport: "udp"
+  external_host: ""
+  external_port: 0
+  media_external_ip: ""
+
+
+
+log:
+  format: "text"
+  level: "warn"
+  # sip: "debug"
+  # openai: "trace"
+  # deepgram: "warn"
+  # gemini: "warn"
+  # media: false
+
+ai:
+  provider: "openai"
+  reconnect_retries: 3
+  reconnect_delay_ms: 1000
+  dump_audio: true
+
+openai:
+  api_key: ""
+  model: "gpt-4o-realtime-preview"
+  voice: "alloy"
+  system_prompt: "You are a helpful voice assistant."
+  greeting: "Hello, how can I help you today?"
+
+deepgram:
+  api_key: ""
+  listen_model: "nova-3"
+  think_model: "gpt-4o-mini"
+  speak_model: "aura-2-thalia-en"
+  language: "en"
+  greeting: "Hello, how can I help you?"
+
+gemini:
+  api_key: ""
+  model: "gemini-2.5-flash-native-audio-preview-12-2025"
+  system_prompt: "You are a helpful voice assistant."
+
+transfers:
+  sales: "tel:+12025551234"
+  support: "sip:support@pbx.example.com"

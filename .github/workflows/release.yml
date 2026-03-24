@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          go build -ldflags="-s -w" -o sip2ai ./cmd/sip2ai
+
+      - name: Build deb package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG_DIR="sip2ai_${VERSION}_amd64"
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          mkdir -p "${PKG_DIR}/usr/bin"
+          mkdir -p "${PKG_DIR}/etc/sip2ai"
+          mkdir -p "${PKG_DIR}/lib/systemd/system"
+
+          cp sip2ai "${PKG_DIR}/usr/bin/"
+          cp config.yaml "${PKG_DIR}/etc/sip2ai/config.yaml"
+
+          cat > "${PKG_DIR}/DEBIAN/control" <<EOF
+          Package: sip2ai
+          Version: ${VERSION}
+          Section: comm
+          Priority: optional
+          Architecture: amd64
+          Maintainer: sip2ai contributors
+          Description: SIP-to-AI voice bridge
+           Bridges inbound SIP calls to AI voice APIs
+           (OpenAI Realtime, Deepgram Voice Agent, Gemini Live).
+          EOF
+
+          cat > "${PKG_DIR}/DEBIAN/conffiles" <<EOF
+          /etc/sip2ai/config.yaml
+          EOF
+
+          cat > "${PKG_DIR}/lib/systemd/system/sip2ai.service" <<EOF
+          [Unit]
+          Description=SIP-to-AI Voice Bridge
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/bin/sip2ai
+          WorkingDirectory=/etc/sip2ai
+          Restart=on-failure
+          RestartSec=5
+          LimitNOFILE=65535
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          dpkg-deb --build "${PKG_DIR}"
+
+      - name: Upload deb to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release upload "${GITHUB_REF_NAME}" "sip2ai_${VERSION}_amd64.deb"
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
