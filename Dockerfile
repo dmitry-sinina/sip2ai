@@ -7,6 +7,6 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /sip2ai ./cmd/sip2ai
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=builder /sip2ai /sip2ai
-COPY config.yaml /etc/sip2ai/config.yaml
+COPY config.yaml.distr /etc/sip2ai/config.yaml.distr
 WORKDIR /etc/sip2ai
 ENTRYPOINT ["/sip2ai"]

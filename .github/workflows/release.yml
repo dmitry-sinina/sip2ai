@@ -39,7 +39,7 @@ jobs:
           mkdir -p "${PKG_DIR}/lib/systemd/system"
 
           cp sip2ai "${PKG_DIR}/usr/bin/"
-          cp config.yaml "${PKG_DIR}/etc/sip2ai/config.yaml"
+          cp config.yaml.distr "${PKG_DIR}/etc/sip2ai/config.yaml.distr"
 
           cat > "${PKG_DIR}/DEBIAN/control" <<EOF
           Package: sip2ai
@@ -54,7 +54,7 @@ jobs:
           EOF
 
           cat > "${PKG_DIR}/DEBIAN/conffiles" <<EOF
-          /etc/sip2ai/config.yaml
+          /etc/sip2ai/config.yaml.distr
           EOF
 
           cat > "${PKG_DIR}/lib/systemd/system/sip2ai.service" <<EOF
