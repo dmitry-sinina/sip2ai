@@ -103,30 +103,40 @@ func (c *openAIClient) Connect(ctx context.Context) error {
 			"create_response":     true,
 		},
 	}
+	tools := []map[string]any{
+		{
+			"type":        "function",
+			"name":        "hangup_call",
+			"description": c.cfg.HangupToolDesc,
+			"parameters": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+	}
 	if len(c.transfers) > 0 {
 		destinations := make([]string, 0, len(c.transfers))
 		for name := range c.transfers {
 			destinations = append(destinations, name)
 		}
-		session["tools"] = []map[string]any{
-			{
-				"type":        "function",
-				"name":        "transfer_call",
-				"description": "Transfer the caller to another department or person. Use this when the caller explicitly asks to be transferred.",
-				"parameters": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"destination": map[string]any{
-							"type":        "string",
-							"enum":        destinations,
-							"description": "The department or person to transfer to",
-						},
+		tools = append(tools, map[string]any{
+			"type":        "function",
+			"name":        "transfer_call",
+			"description": c.cfg.TransferToolDesc,
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"destination": map[string]any{
+						"type":        "string",
+						"enum":        destinations,
+						"description": "The department or person to transfer to",
 					},
-					"required": []string{"destination"},
 				},
+				"required": []string{"destination"},
 			},
-		}
+		})
 	}
+	session["tools"] = tools
 	update := map[string]any{
 		"type":    "session.update",
 		"session": session,
@@ -324,40 +334,50 @@ func (c *openAIClient) handleOutputItem(ctx context.Context, msg map[string]json
 		return
 	}
 
-	var args struct {
-		Destination string `json:"destination"`
-	}
-	if err := json.Unmarshal([]byte(item.Args), &args); err != nil {
-		c.logger.Error("openai: failed to parse function call args", "err", err, "args", item.Args)
-		return
-	}
+	switch item.Name {
+	case "hangup_call":
+		c.logger.Info("openai: hangup requested")
+		c.sendFunctionResult(ctx, item.CallID, `{"status": "hanging_up"}`)
+		c.sendResponseCreate(ctx, "Say goodbye to the caller briefly.")
+		select {
+		case c.transferCh <- TransferRequest{}: // empty destination = hangup
+		default:
+		}
 
-	phoneNumber, ok := c.transfers[args.Destination]
-	if !ok {
-		c.logger.Warn("openai: unknown transfer destination", "destination", args.Destination)
-		c.sendFunctionResult(ctx, item.CallID, `{"error": "unknown destination"}`)
-		return
+	case "transfer_call":
+		var args struct {
+			Destination string `json:"destination"`
+		}
+		if err := json.Unmarshal([]byte(item.Args), &args); err != nil {
+			c.logger.Error("openai: failed to parse transfer args", "err", err, "args", item.Args)
+			return
+		}
+		phoneNumber, ok := c.transfers[args.Destination]
+		if !ok {
+			c.logger.Warn("openai: unknown transfer destination", "destination", args.Destination)
+			c.sendFunctionResult(ctx, item.CallID, `{"error": "unknown destination"}`)
+			return
+		}
+		c.logger.Info("openai: transfer requested", "destination", args.Destination, "number", phoneNumber)
+		c.sendFunctionResult(ctx, item.CallID, `{"status": "transferring"}`)
+		c.sendResponseCreate(ctx, "Tell the caller you are transferring them now. Keep it brief.")
+		select {
+		case c.transferCh <- TransferRequest{Destination: phoneNumber}:
+		default:
+		}
 	}
+}
 
-	c.logger.Info("openai: transfer requested", "destination", args.Destination, "number", phoneNumber)
-
-	// Acknowledge the function call and ask the AI to say goodbye.
-	c.sendFunctionResult(ctx, item.CallID, `{"status": "transferring"}`)
+func (c *openAIClient) sendResponseCreate(ctx context.Context, instructions string) {
 	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 	wsjson.Write(ctx, c.conn, map[string]any{ //nolint:errcheck
 		"type": "response.create",
 		"response": map[string]any{
-			"instructions": "Tell the caller you are transferring them now. Keep it brief.",
+			"instructions": instructions,
 			"modalities":   []string{"audio", "text"},
 		},
 	})
-	c.sendMu.Unlock()
-
-	// Signal the transfer to the call session.
-	select {
-	case c.transferCh <- TransferRequest{Destination: phoneNumber}:
-	default:
-	}
 }
 
 func (c *openAIClient) sendFunctionResult(ctx context.Context, callID, output string) {

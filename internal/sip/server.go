@@ -179,7 +179,7 @@ func (s *Server) handleCall(dialog *diago.DialogServerSession) {
 	)
 	transfer := sess.Run()
 
-	if transfer != nil {
+	if transfer != nil && transfer.Destination != "" {
 		var referTo sipsip.Uri
 		if err := sipsip.ParseUri(transfer.Destination, &referTo); err != nil {
 			log.Error("SIP REFER: invalid URI", "err", err, "destination", transfer.Destination)

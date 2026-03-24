@@ -46,12 +46,14 @@ type AIConfig struct {
 }
 
 type OpenAIConfig struct {
-	APIKey       string `yaml:"api_key"`
-	Model        string `yaml:"model"`
-	Voice        string `yaml:"voice"`
-	SystemPrompt string `yaml:"system_prompt"`
-	Greeting     string `yaml:"greeting"`
-	Proxy        string `yaml:"proxy"`
+	APIKey            string `yaml:"api_key"`
+	Model             string `yaml:"model"`
+	Voice             string `yaml:"voice"`
+	SystemPrompt      string `yaml:"system_prompt"`
+	Greeting          string `yaml:"greeting"`
+	Proxy             string `yaml:"proxy"`
+	HangupToolDesc    string `yaml:"hangup_tool_desc"`
+	TransferToolDesc  string `yaml:"transfer_tool_desc"`
 }
 
 type DeepgramConfig struct {
@@ -159,6 +161,8 @@ func Load(path string) (*Config, error) {
 	cfg.OpenAI.Model = "gpt-4o-realtime-preview"
 	cfg.OpenAI.Voice = "alloy"
 	cfg.OpenAI.SystemPrompt = "You are a helpful voice assistant."
+	cfg.OpenAI.HangupToolDesc = "End the call. Use this when the caller says goodbye, wants to hang up, or the conversation is complete."
+	cfg.OpenAI.TransferToolDesc = "Transfer the caller to another department or person. Use this when the caller explicitly asks to be transferred."
 	cfg.Deepgram.ListenModel = "nova-3"
 	cfg.Deepgram.ThinkModel = "gpt-4o-mini"
 	cfg.Deepgram.SpeakModel = "aura-2-thalia-en"
