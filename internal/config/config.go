@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -99,6 +100,22 @@ type CallOverride struct {
 	Transfers    map[string]string `json:"transfers,omitempty"`
 }
 
+// normalizeTransfers rewrites bare phone numbers into tel: URIs.
+// Values that already carry a URI scheme (e.g. "tel:", "sip:", "sips:")
+// are left untouched. A bare number is detected as having no ":" separator.
+func normalizeTransfers(m map[string]string) {
+	for k, v := range m {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if !strings.Contains(v, ":") {
+			v = "tel:" + v
+		}
+		m[k] = v
+	}
+}
+
 // WithOverride returns a deep copy of cfg with the override applied.
 // If o is nil, returns an unmodified copy.
 func (cfg *Config) WithOverride(o *CallOverride) *Config {
@@ -118,6 +135,7 @@ func (cfg *Config) WithOverride(o *CallOverride) *Config {
 	}
 	if o.Transfers != nil {
 		c.Transfers = o.Transfers
+		normalizeTransfers(c.Transfers)
 	}
 	// Apply to the active provider config.
 	if o.APIKey != nil {
@@ -191,6 +209,8 @@ func Load(path string) (*Config, error) {
 			}
 		}
 	}
+
+	normalizeTransfers(cfg.Transfers)
 
 	// Environment variables override config file.
 	if v := os.Getenv("SIP_BIND_HOST"); v != "" {
