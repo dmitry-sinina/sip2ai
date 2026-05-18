@@ -14,6 +14,7 @@ import (
 
 	"sip2ai/internal/audio"
 	"sip2ai/internal/config"
+	"sip2ai/internal/metrics"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )
@@ -24,6 +25,8 @@ type geminiClient struct {
 	cfg      *config.GeminiConfig
 	logger   *slog.Logger
 	logMedia bool
+	metrics  *metrics.Recorder
+	sipCodec string
 	conn     *websocket.Conn
 	recvCh chan []byte
 	errCh  chan error
@@ -38,18 +41,20 @@ type geminiClient struct {
 	lastRecv time.Time
 }
 
-func newGeminiClient(cfg *config.GeminiConfig, logger *slog.Logger, logMedia bool) *geminiClient {
+func newGeminiClient(cfg *config.GeminiConfig, logger *slog.Logger, logMedia bool, rec *metrics.Recorder) *geminiClient {
 	return &geminiClient{
 		cfg:      cfg,
 		logger:   logger,
 		logMedia: logMedia,
+		metrics:  rec,
 		recvCh:   make(chan []byte, 64),
 		errCh:    make(chan error, 4),
 		done:     make(chan struct{}),
 	}
 }
 
-func (c *geminiClient) Connect(ctx context.Context) error {
+func (c *geminiClient) Connect(ctx context.Context, sipCodec string) error {
+	c.sipCodec = sipCodec
 	wsURL := fmt.Sprintf("%s?key=%s", geminiEndpoint, c.cfg.APIKey)
 	var dialOpts *websocket.DialOptions
 	if c.cfg.Proxy != "" {
@@ -124,6 +129,7 @@ func (c *geminiClient) recvLoop(ctx context.Context) {
 		}
 
 		if _, ok := msg["goAway"]; ok {
+			c.metrics.AIError("gemini", "go_away")
 			c.logger.Info("gemini goAway received - session expiring")
 			c.errCh <- fmt.Errorf("gemini goAway - session expiring")
 			return
@@ -149,10 +155,7 @@ func (c *geminiClient) recvLoop(ctx context.Context) {
 		}
 
 		for _, part := range sc.ModelTurn.Parts {
-			if part.InlineData == nil {
-				continue
-			}
-			if part.InlineData.MimeType != "audio/pcm;rate=24000" {
+			if part.InlineData == nil || part.InlineData.MimeType != "audio/pcm;rate=24000" {
 				continue
 			}
 			rawBytes, err := base64.StdEncoding.DecodeString(part.InlineData.Data)
@@ -160,25 +163,13 @@ func (c *geminiClient) recvLoop(ctx context.Context) {
 				c.logger.Debug("gemini: base64 decode error", "err", err)
 				continue
 			}
-			src24, err := audio.BytesToInt16(rawBytes)
+			out, err := c.transcodeRecv(rawBytes)
 			if err != nil {
-				continue
-			}
-			dst8 := make([]int16, len(src24)/3)
-			if err := audio.Resample24to8(dst8, src24); err != nil {
-				continue
-			}
-			pcm8 := audio.Int16ToBytes(dst8)
-			out := make([]byte, len(pcm8)/2)
-			if _, err := audio.EncodeUlaw(out, pcm8); err != nil {
 				continue
 			}
 			if c.logMedia {
 				c.logger.Log(ctx, LevelTrace, "gemini rx audio chunk",
-					"mime", part.InlineData.MimeType,
-					"raw_bytes", len(rawBytes),
-					"g711_bytes", len(out),
-				)
+					"raw_bytes", len(rawBytes), "out_bytes", len(out))
 			}
 
 			c.mu.Lock()
@@ -194,26 +185,13 @@ func (c *geminiClient) recvLoop(ctx context.Context) {
 }
 
 func (c *geminiClient) SendAudio(frame []byte) error {
-	pcmBuf := make([]byte, audio.FrameBytesPCM)
-	if _, err := audio.DecodeUlaw(pcmBuf, frame); err != nil {
-		return fmt.Errorf("gemini SendAudio decode: %w", err)
+	rawBytes, err := c.transcodeSend(frame)
+	if err != nil {
+		return err
 	}
-
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
-
-	for i := range c.pcm8buf {
-		c.pcm8buf[i] = int16(uint16(pcmBuf[2*i]) | uint16(pcmBuf[2*i+1])<<8)
-	}
-	if err := audio.Resample8to16(c.pcm16buf[:], c.pcm8buf[:]); err != nil {
-		return fmt.Errorf("gemini SendAudio resample: %w", err)
-	}
-	rawBytes := audio.Int16ToBytes(c.pcm16buf[:])
 	if c.logMedia {
 		c.logger.Log(context.Background(), LevelTrace, "gemini tx audio frame",
-			"g711_bytes", len(frame),
-			"pcm16_bytes", len(rawBytes),
-		)
+			"in_bytes", len(frame), "pcm16_bytes", len(rawBytes))
 	}
 	encoded := base64.StdEncoding.EncodeToString(rawBytes)
 
@@ -273,4 +251,80 @@ func (c *geminiClient) Close() error {
 		return c.conn.Close(websocket.StatusNormalClosure, "")
 	}
 	return nil
+}
+
+// transcodeSend converts SIP audio to Gemini's PCM16 16kHz format.
+func (c *geminiClient) transcodeSend(frame []byte) ([]byte, error) {
+	switch c.sipCodec {
+	case "L16": // L16/16000 -> PCM16 16kHz: pass through
+		return frame, nil
+	case "PCMA":
+		// alaw 8kHz -> PCM16 8kHz -> resample 16kHz
+		pcmBuf := make([]byte, len(frame)*2)
+		if _, err := audio.DecodeAlaw(pcmBuf, frame); err != nil {
+			return nil, fmt.Errorf("gemini send decode alaw: %w", err)
+		}
+		return c.resample8to16(pcmBuf)
+	default: // PCMU
+		pcmBuf := make([]byte, len(frame)*2)
+		if _, err := audio.DecodeUlaw(pcmBuf, frame); err != nil {
+			return nil, fmt.Errorf("gemini send decode ulaw: %w", err)
+		}
+		return c.resample8to16(pcmBuf)
+	}
+}
+
+func (c *geminiClient) resample8to16(pcm8Bytes []byte) ([]byte, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	samples := len(pcm8Bytes) / 2
+	src := make([]int16, samples)
+	for i := range src {
+		src[i] = int16(uint16(pcm8Bytes[2*i]) | uint16(pcm8Bytes[2*i+1])<<8)
+	}
+	dst := make([]int16, samples*2)
+	if err := audio.Resample8to16(dst, src); err != nil {
+		return nil, fmt.Errorf("gemini send resample: %w", err)
+	}
+	return audio.Int16ToBytes(dst), nil
+}
+
+// transcodeRecv converts Gemini's PCM16 24kHz output to the SIP codec.
+func (c *geminiClient) transcodeRecv(raw24 []byte) ([]byte, error) {
+	src24, err := audio.BytesToInt16(raw24)
+	if err != nil {
+		return nil, err
+	}
+
+	switch c.sipCodec {
+	case "L16": // L16/16000: resample 24->16kHz, return PCM16 bytes
+		// 24kHz to 16kHz = 2:3 ratio
+		dst16 := make([]int16, len(src24)*2/3)
+		if err := audio.Resample24to16(dst16, src24); err != nil {
+			return nil, err
+		}
+		return audio.Int16ToBytes(dst16), nil
+	case "PCMA":
+		dst8 := make([]int16, len(src24)/3)
+		if err := audio.Resample24to8(dst8, src24); err != nil {
+			return nil, err
+		}
+		pcm8 := audio.Int16ToBytes(dst8)
+		out := make([]byte, len(pcm8)/2)
+		if _, err := audio.EncodeAlaw(out, pcm8); err != nil {
+			return nil, err
+		}
+		return out, nil
+	default: // PCMU
+		dst8 := make([]int16, len(src24)/3)
+		if err := audio.Resample24to8(dst8, src24); err != nil {
+			return nil, err
+		}
+		pcm8 := audio.Int16ToBytes(dst8)
+		out := make([]byte, len(pcm8)/2)
+		if _, err := audio.EncodeUlaw(out, pcm8); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
 }

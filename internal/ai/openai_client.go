@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"sip2ai/internal/config"
+	"sip2ai/internal/metrics"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )
@@ -34,6 +35,7 @@ type openAIClient struct {
 	transfers  map[string]string
 	logger     *slog.Logger
 	logMedia   bool
+	metrics    *metrics.Recorder
 	conn       *websocket.Conn
 	recvCh     chan []byte
 	errCh      chan error
@@ -45,12 +47,13 @@ type openAIClient struct {
 	usage      openAIUsage
 }
 
-func newOpenAIClient(cfg *config.OpenAIConfig, transfers map[string]string, logger *slog.Logger, logMedia bool) *openAIClient {
+func newOpenAIClient(cfg *config.OpenAIConfig, transfers map[string]string, logger *slog.Logger, logMedia bool, rec *metrics.Recorder) *openAIClient {
 	return &openAIClient{
 		cfg:        cfg,
 		transfers:  transfers,
 		logger:     logger,
 		logMedia:   logMedia,
+		metrics:    rec,
 		recvCh:     make(chan []byte, 256),
 		errCh:      make(chan error, 4),
 		transferCh: make(chan TransferRequest, 1),
@@ -62,7 +65,7 @@ func (c *openAIClient) TransferCh() <-chan TransferRequest {
 	return c.transferCh
 }
 
-func (c *openAIClient) Connect(ctx context.Context) error {
+func (c *openAIClient) Connect(ctx context.Context, sipCodec string) error {
 	wsURL := fmt.Sprintf("%s?model=%s", openAIEndpoint, c.cfg.Model)
 	dialOpts := &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
@@ -91,10 +94,11 @@ func (c *openAIClient) Connect(ctx context.Context) error {
 		return fmt.Errorf("openai session.created: %w", err)
 	}
 
+	audioFmt := codecToOpenAI(sipCodec)
 	session := map[string]any{
 		"modalities":          []string{"audio", "text"},
-		"input_audio_format":  "g711_ulaw",
-		"output_audio_format": "g711_ulaw",
+		"input_audio_format":  audioFmt,
+		"output_audio_format": audioFmt,
 		"voice":               c.cfg.Voice,
 		"instructions":        c.cfg.SystemPrompt,
 		"turn_detection": map[string]any{
@@ -245,6 +249,7 @@ func (c *openAIClient) recvLoop(ctx context.Context) {
 				c.logger.Log(ctx, LevelTrace, fmt.Sprintf("openai rx event type=%s\n%s", eventType, raw))
 			}
 		case "error":
+			c.metrics.AIError("openai", "server_error")
 			errRaw, _ := json.Marshal(msg)
 			c.errCh <- fmt.Errorf("openai server error: %s", errRaw)
 		default:
@@ -427,4 +432,16 @@ func (c *openAIClient) parseUsage(msg map[string]json.RawMessage) {
 	c.usage.OutputText += u.OutputDetail.TextTokens
 	c.usage.OutputAudio += u.OutputDetail.AudioTokens
 	c.mu.Unlock()
+	c.metrics.TokensUsed("openai", u.InputDetail.TextTokens, u.InputDetail.AudioTokens, u.OutputDetail.TextTokens, u.OutputDetail.AudioTokens)
+}
+
+func codecToOpenAI(codec string) string {
+	switch codec {
+	case "PCMA":
+		return "g711_alaw"
+	case "L16":
+		return "pcm16"
+	default:
+		return "g711_ulaw"
+	}
 }

@@ -11,6 +11,7 @@ type Config struct {
 	SIP       SIPConfig         `yaml:"sip"`
 	AI        AIConfig          `yaml:"ai"`
 	Log       LogConfig         `yaml:"log"`
+	Metrics   MetricsConfig     `yaml:"metrics"`
 	OpenAI    OpenAIConfig      `yaml:"openai"`
 	Deepgram  DeepgramConfig    `yaml:"deepgram"`
 	Gemini    GeminiConfig      `yaml:"gemini"`
@@ -43,6 +44,14 @@ type AIConfig struct {
 	ReconnectDelayMs  int    `yaml:"reconnect_delay_ms"`
 	DumpAudio         bool   `yaml:"dump_audio"`
 	LogMedia          bool   `yaml:"-"` // set via --log-media CLI flag
+	Codec             string `yaml:"-"` // set per-call from SDP negotiation ("PCMU", "PCMA", "L16")
+	CodecRate         uint32 `yaml:"-"` // sample rate of negotiated codec
+}
+
+type MetricsConfig struct {
+	Enabled bool              `yaml:"enabled"`
+	Listen  string            `yaml:"listen"`
+	Labels  map[string]string `yaml:"labels"`
 }
 
 type OpenAIConfig struct {
@@ -57,13 +66,14 @@ type OpenAIConfig struct {
 }
 
 type DeepgramConfig struct {
-	APIKey       string `yaml:"api_key"`
-	ListenModel  string `yaml:"listen_model"`
-	ThinkModel   string `yaml:"think_model"`
-	SpeakModel   string `yaml:"speak_model"`
-	Language     string `yaml:"language"`
-	Greeting     string `yaml:"greeting"`
-	Proxy        string `yaml:"proxy"`
+	APIKey         string `yaml:"api_key"`
+	ListenModel    string `yaml:"listen_model"`
+	ThinkModel     string `yaml:"think_model"`
+	SpeakModel     string `yaml:"speak_model"`
+	Language       string `yaml:"language"`
+	Greeting       string `yaml:"greeting"`
+	Proxy          string `yaml:"proxy"`
+	HangupToolDesc string `yaml:"hangup_tool_desc"`
 }
 
 type GeminiConfig struct {
@@ -154,6 +164,7 @@ func Load(path string) (*Config, error) {
 	cfg.SIP.Transport = "udp"
 	cfg.Log.Format = "text"
 	cfg.Log.Level = "warn"
+	cfg.Metrics.Listen = ":9090"
 	cfg.AI.Provider = "openai"
 	cfg.AI.ConnectTimeoutMs = 5000
 	cfg.AI.ReconnectRetries = 3
@@ -168,6 +179,7 @@ func Load(path string) (*Config, error) {
 	cfg.Deepgram.SpeakModel = "aura-2-thalia-en"
 	cfg.Deepgram.Language = "en"
 	cfg.Deepgram.Greeting = "Hello, how can I help you?"
+	cfg.Deepgram.HangupToolDesc = "End the call. Use this when the caller says goodbye, wants to hang up, or the conversation is complete."
 	cfg.Gemini.Model = "gemini-2.5-flash-native-audio-preview-12-2025"
 	cfg.Gemini.SystemPrompt = "You are a helpful voice assistant."
 

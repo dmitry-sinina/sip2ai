@@ -15,6 +15,7 @@ import (
 	sipsip "github.com/emiago/sipgo/sip"
 	"sip2ai/internal/ai"
 	"sip2ai/internal/config"
+	"sip2ai/internal/metrics"
 	rtpsession "sip2ai/internal/rtp"
 )
 
@@ -27,6 +28,7 @@ type Server struct {
 	aiFactory func(cid string, cfg *config.Config) ai.AIProvider
 	logger    *slog.Logger
 	cfg       *config.Config
+	metrics   *metrics.Recorder
 
 	mu    sync.Mutex
 	calls map[string]context.CancelFunc // call_id -> cancel
@@ -34,7 +36,7 @@ type Server struct {
 }
 
 // NewServer constructs and configures a Server but does not start it.
-func NewServer(cfg *config.Config, aiFactory func(cid string, cfg *config.Config) ai.AIProvider, logger *slog.Logger, version string) (*Server, error) {
+func NewServer(cfg *config.Config, aiFactory func(cid string, cfg *config.Config) ai.AIProvider, logger *slog.Logger, version string, rec *metrics.Recorder) (*Server, error) {
 	ua, err := sipgo.NewUA(sipgo.WithUserAgent("sip2ai/" + version))
 	if err != nil {
 		return nil, fmt.Errorf("sipgo UA: %w", err)
@@ -51,9 +53,10 @@ func NewServer(cfg *config.Config, aiFactory func(cid string, cfg *config.Config
 		transport.MediaExternalIP = net.ParseIP(cfg.SIP.MediaExternalIP)
 	}
 
-	// Only advertise PCMU - all AI providers are configured for mulaw 8 kHz.
+	// Advertise both PCMU and PCMA. The negotiated codec is detected per call
+	// and passed to the AI provider.
 	mediaConf := diago.MediaConfig{
-		Codecs: []diagomedia.Codec{diagomedia.CodecAudioUlaw},
+		Codecs: []diagomedia.Codec{diagomedia.CodecAudioUlaw, diagomedia.CodecAudioAlaw},
 	}
 
 	d := diago.NewDiago(ua,
@@ -67,6 +70,7 @@ func NewServer(cfg *config.Config, aiFactory func(cid string, cfg *config.Config
 		aiFactory: aiFactory,
 		logger:    logger,
 		cfg:       cfg,
+		metrics:   rec,
 		calls:     make(map[string]context.CancelFunc),
 	}, nil
 }
@@ -108,6 +112,9 @@ func (s *Server) handleCall(dialog *diago.DialogServerSession) {
 	}
 	log := s.logger.With("cid", cid)
 	log.Info("incoming call")
+	s.metrics.CallStarted()
+	callStart := time.Now()
+	callStatus := "failed" // updated on success paths
 
 	// Parse per-call config override from X-Sip2ai-Config header.
 	callCfg := s.cfg
@@ -138,14 +145,34 @@ func (s *Server) handleCall(dialog *diago.DialogServerSession) {
 		s.wg.Done()
 	}()
 
+	// Negotiate codec from the INVITE SDP before connecting AI.
+	sdpBody := dialog.InviteRequest.Body()
+	codec, ok := ai.NegotiateCodec(callCfg.AI.Provider, sdpBody)
+	if !ok {
+		log.Error("no matching codec in SDP offer")
+		s.metrics.CallEnded(callCfg.AI.Provider, "", callStatus, time.Since(callStart))
+		dialog.Respond(sipsip.StatusNotAcceptableHere, "No Acceptable Codec", nil) //nolint:errcheck
+		return
+	}
+	callCfg.AI.Codec = codec.Name
+	callCfg.AI.CodecRate = codec.SampleRate
+	log.Info("codec negotiated", "codec", codec.Name, "rate", codec.SampleRate)
+
 	provider := s.aiFactory(cid, callCfg)
+	connectStart := time.Now()
 	if err := rtpsession.ConnectWithRetry(callCtx, provider, callCfg.AI, log); err != nil {
+		s.metrics.AIConnectDuration(callCfg.AI.Provider, time.Since(connectStart))
+		s.metrics.CallEnded(callCfg.AI.Provider, callCfg.AI.Codec, callStatus, time.Since(callStart))
 		log.Error("AI connect failed, rejecting call", "err", err)
 		dialog.Respond(sipsip.StatusServiceUnavailable, "Service Unavailable", nil) //nolint:errcheck
 		return
 	}
+	s.metrics.AIConnectDuration(callCfg.AI.Provider, time.Since(connectStart))
 
-	if err := dialog.Answer(); err != nil {
+	// Answer with the single codec we already negotiated so the phone is forced
+	// to use exactly the same codec we configured the AI provider with.
+	// Offering multiple codecs risks the phone picking a different one.
+	if err := dialog.AnswerOptions(diago.AnswerOptions{Codecs: []diagomedia.Codec{codec}}); err != nil {
 		log.Error("answer failed", "err", err)
 		return
 	}
@@ -153,7 +180,8 @@ func (s *Server) handleCall(dialog *diago.DialogServerSession) {
 		hangCtx, hcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer hcancel()
 		dialog.Hangup(hangCtx) //nolint:errcheck
-		log.Info("call ended")
+		s.metrics.CallEnded(callCfg.AI.Provider, callCfg.AI.Codec, callStatus, time.Since(callStart))
+		log.Info("call ended", "status", callStatus, "duration", time.Since(callStart))
 	}()
 
 	audioReader, err := dialog.AudioReader()
@@ -176,10 +204,13 @@ func (s *Server) handleCall(dialog *diago.DialogServerSession) {
 		provider,
 		log,
 		callCfg.AI,
+		s.metrics,
 	)
 	transfer := sess.Run()
+	callStatus = "completed"
 
 	if transfer != nil && transfer.Destination != "" {
+		callStatus = "transferred"
 		var referTo sipsip.Uri
 		if err := sipsip.ParseUri(transfer.Destination, &referTo); err != nil {
 			log.Error("SIP REFER: invalid URI", "err", err, "destination", transfer.Destination)

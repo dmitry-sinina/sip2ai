@@ -37,6 +37,24 @@ func Resample24to8(dst, src []int16) error {
 	return nil
 }
 
+// Resample24to16 downsamples 24 kHz PCM16 to 16 kHz PCM16 (3:2 ratio).
+// dst must have length len(src)*2/3.
+func Resample24to16(dst, src []int16) error {
+	expected := len(src) * 2 / 3
+	if len(dst) < expected {
+		return fmt.Errorf("resample24to16: dst len %d too small for src len %d (need %d)", len(dst), len(src), expected)
+	}
+	// For every 3 input samples, produce 2 output samples via linear interpolation.
+	for i := 0; i < len(src)/3; i++ {
+		s0 := int32(src[i*3])
+		s1 := int32(src[i*3+1])
+		s2 := int32(src[i*3+2])
+		dst[i*2] = int16((s0*2 + s1) / 3)
+		dst[i*2+1] = int16((s1 + s2*2) / 3)
+	}
+	return nil
+}
+
 // BytesToInt16 reinterprets a byte slice as a slice of little-endian int16.
 // len(b) must be even.
 func BytesToInt16(b []byte) ([]int16, error) {

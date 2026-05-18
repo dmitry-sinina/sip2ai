@@ -29,6 +29,8 @@ openai:
   system_prompt: "You are a helpful voice assistant."
   greeting: "Hello, how can I help you today?"
   # proxy: "http://proxy.example.com:8080"
+  # hangup_tool_desc: "End the call. Use this when the caller says goodbye, wants to hang up, or the conversation is complete."
+  # transfer_tool_desc: "Transfer the caller to another department or person. Use this when the caller explicitly asks to be transferred."
 
 deepgram:
   api_key: ""
@@ -38,12 +40,20 @@ deepgram:
   language: "en"
   greeting: "Hello, how can I help you?"
   # proxy: "http://proxy.example.com:8080"
+  # hangup_tool_desc: "End the call. Use this when the caller says goodbye, wants to hang up, or the conversation is complete."
 
 gemini:
   api_key: ""
   model: "gemini-2.5-flash-native-audio-preview-12-2025"
   system_prompt: "You are a helpful voice assistant."
   # proxy: "http://proxy.example.com:8080"
+
+# metrics:
+#   enabled: true
+#   listen: ":9090"
+#   labels:
+#     environment: production
+#     region: us-east-1
 
 # transfers:
 #   sales: "tel:+12025551234"

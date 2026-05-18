@@ -5,14 +5,18 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
-	sipstack "github.com/emiago/sipgo/sip"
+	"github.com/emiago/sipgo/sip"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"sip2ai/internal/ai"
 	"sip2ai/internal/config"
-	"sip2ai/internal/sip"
+	"sip2ai/internal/metrics"
+	sipserver "sip2ai/internal/sip"
 	"sip2ai/internal/siplog"
 )
 
@@ -106,15 +110,15 @@ func main() {
 	sipLogger := newLogger(sipLvl)
 
 	// Wire slog into sipgo and diago.
-	sipstack.SetDefaultLogger(sipLogger)
+	sip.SetDefaultLogger(sipLogger)
 
 	// debug: print full SIP messages at the transport layer.
 	// trace: additionally log transaction FSM state transitions.
 	if sipLvl <= slog.LevelDebug {
-		sipstack.SIPDebug = true
+		sip.SIPDebug = true
 	}
 	if sipLvl <= LevelTrace {
-		sipstack.TransactionFSMDebug = true
+		sip.TransactionFSMDebug = true
 	}
 
 	providerLoggers := map[string]*slog.Logger{
@@ -123,13 +127,33 @@ func main() {
 		"gemini":   newLogger(geminiLvl),
 	}
 
+	// Prometheus metrics.
+	var rec *metrics.Recorder
+	if cfg.Metrics.Enabled {
+		registry := prometheus.NewRegistry()
+		registerer := prometheus.Registerer(registry)
+		if len(cfg.Metrics.Labels) > 0 {
+			registerer = prometheus.WrapRegistererWith(prometheus.Labels(cfg.Metrics.Labels), registry)
+		}
+		rec = metrics.NewRecorder(registerer, cfg.Log.Media)
+
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+		go func() {
+			slog.Info("metrics server starting", "listen", cfg.Metrics.Listen)
+			if err := http.ListenAndServe(cfg.Metrics.Listen, mux); err != nil {
+				slog.Error("metrics server failed", "err", err)
+			}
+		}()
+	}
+
 	aiFactory := func(cid string, callCfg *config.Config) ai.AIProvider {
 		providerLogger := providerLoggers[callCfg.AI.Provider]
 		if providerLogger == nil {
 			providerLogger = newLogger(minLvl)
 		}
 		logger := providerLogger.With("cid", cid)
-		p, err := ai.New(callCfg, logger)
+		p, err := ai.New(callCfg, logger, rec)
 		if err != nil {
 			slog.Error("AI provider creation failed", "err", err)
 			os.Exit(1)
@@ -137,7 +161,7 @@ func main() {
 		return p
 	}
 
-	server, err := sip.NewServer(cfg, aiFactory, sipLogger, version)
+	server, err := sipserver.NewServer(cfg, aiFactory, sipLogger, version, rec)
 	if err != nil {
 		slog.Error("SIP server creation failed", "err", err)
 		os.Exit(1)

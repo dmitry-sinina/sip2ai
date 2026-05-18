@@ -12,6 +12,7 @@ import (
 	"sip2ai/internal/ai"
 	"sip2ai/internal/audio"
 	"sip2ai/internal/config"
+	"sip2ai/internal/metrics"
 )
 
 const levelTrace = slog.Level(-8)
@@ -23,7 +24,7 @@ func ConnectWithRetry(ctx context.Context, provider ai.AIProvider, cfg config.AI
 	delay := time.Duration(cfg.ReconnectDelayMs) * time.Millisecond
 	for attempt := 0; attempt <= cfg.ReconnectRetries; attempt++ {
 		connectCtx, cancel := context.WithTimeout(ctx, timeout)
-		err := provider.Connect(connectCtx)
+		err := provider.Connect(connectCtx, cfg.Codec)
 		cancel()
 		if err == nil {
 			return nil
@@ -54,6 +55,7 @@ type CallSession struct {
 	adapter    *audio.AudioAdapter
 	logger     *slog.Logger
 	cfg        config.AIConfig
+	metrics    *metrics.Recorder
 	transferCh <-chan ai.TransferRequest
 	transfer   *ai.TransferRequest
 }
@@ -68,6 +70,7 @@ func NewCallSession(
 	provider ai.AIProvider,
 	logger *slog.Logger,
 	cfg config.AIConfig,
+	rec *metrics.Recorder,
 ) *CallSession {
 	s := &CallSession{
 		ctx:           ctx,
@@ -78,6 +81,7 @@ func NewCallSession(
 		adapter:       audio.NewAudioAdapter(logger),
 		logger:        logger,
 		cfg:           cfg,
+		metrics:       rec,
 	}
 	if t, ok := provider.(ai.Transferable); ok {
 		s.transferCh = t.TransferCh()
@@ -157,6 +161,9 @@ func (s *CallSession) runUplink() {
 				s.cancel()
 				return
 			}
+			if s.cfg.LogMedia {
+				s.logger.Log(context.Background(), levelTrace, "uplink: sending frame to AI", "codec", s.cfg.Codec, "bytes", len(f.data))
+			}
 			if err := s.ai.SendAudio(f.data); err != nil {
 				if s.ctx.Err() == nil {
 					s.logger.Error("uplink SendAudio error", "err", err)
@@ -164,6 +171,7 @@ func (s *CallSession) runUplink() {
 				s.cancel()
 				return
 			}
+			s.metrics.AudioFrameSent()
 		case <-timer.C:
 			// Silence suppression: phone stopped sending RTP. Feed silence
 			// to the AI so its VAD can detect end-of-speech.
@@ -208,8 +216,9 @@ func (s *CallSession) runDownlink() {
 				s.adapter.Close()
 				return
 			}
+			s.metrics.AudioFrameReceived()
 			if s.cfg.LogMedia {
-				s.logger.Log(context.Background(), levelTrace, "downlink: AI audio received", "g711_bytes", len(g711))
+				s.logger.Log(context.Background(), levelTrace, "downlink: AI audio received", "codec", s.cfg.Codec, "bytes", len(g711))
 			}
 			if rxDump != nil {
 				rxDump.Write(g711) //nolint:errcheck
@@ -248,7 +257,7 @@ func (s *CallSession) runDownlink() {
 			frame = silence
 		}
 		if s.cfg.LogMedia {
-			s.logger.Log(context.Background(), levelTrace, "downlink: sending frame to RTP", "g711_bytes", len(frame))
+			s.logger.Log(context.Background(), levelTrace, "downlink: sending frame to RTP", "codec", s.cfg.Codec, "bytes", len(frame))
 		}
 		if _, err := s.audioWriter.Write(frame); err != nil {
 			if s.ctx.Err() == nil {
