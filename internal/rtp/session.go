@@ -24,7 +24,7 @@ func ConnectWithRetry(ctx context.Context, provider ai.AIProvider, cfg config.AI
 	delay := time.Duration(cfg.ReconnectDelayMs) * time.Millisecond
 	for attempt := 0; attempt <= cfg.ReconnectRetries; attempt++ {
 		connectCtx, cancel := context.WithTimeout(ctx, timeout)
-		err := provider.Connect(connectCtx, cfg.Codec)
+		err := provider.Connect(connectCtx, cfg.Codec, cfg.CodecRate)
 		cancel()
 		if err == nil {
 			return nil
@@ -58,6 +58,7 @@ type CallSession struct {
 	metrics    *metrics.Recorder
 	transferCh <-chan ai.TransferRequest
 	transfer   *ai.TransferRequest
+	frameBytes int // size of one 20ms RTP frame for the negotiated codec
 }
 
 // NewCallSession creates a CallSession. The provider must already be connected
@@ -72,16 +73,18 @@ func NewCallSession(
 	cfg config.AIConfig,
 	rec *metrics.Recorder,
 ) *CallSession {
+	frameBytes := audio.FrameBytesFor(cfg.Codec, cfg.CodecRate)
 	s := &CallSession{
 		ctx:           ctx,
 		cancel:        cancel,
 		encodedReader: encodedReader,
 		audioWriter:   audioWriter,
 		ai:            provider,
-		adapter:       audio.NewAudioAdapter(logger),
+		adapter:       audio.NewAudioAdapter(logger, frameBytes),
 		logger:        logger,
 		cfg:           cfg,
 		metrics:       rec,
+		frameBytes:    frameBytes,
 	}
 	if t, ok := provider.(ai.Transferable); ok {
 		s.transferCh = t.TransferCh()
@@ -142,11 +145,9 @@ func (s *CallSession) runUplink() {
 		}
 	}()
 
-	// G.711 ulaw silence = 0xFF per byte.
-	silence := make([]byte, audio.FrameBytesG711)
-	for i := range silence {
-		silence[i] = 0xFF
-	}
+	// Per-codec silence frame, sized to one 20ms tick.
+	silence := makeSilence(s.cfg.Codec, s.frameBytes)
+	isL16 := s.cfg.Codec == "L16"
 
 	// 20ms frame interval; send silence if no RTP frame arrives within 40ms.
 	const silenceTimeout = 40 * time.Millisecond
@@ -166,6 +167,11 @@ func (s *CallSession) runUplink() {
 				s.cancel()
 				return
 			}
+			// RTP L16 is big-endian (RFC 3551 §4.5.11); AI backends expect
+			// little-endian PCM. Swap in place — frameCh data is our copy.
+			if isL16 {
+				audio.SwapPCM16(f.data)
+			}
 			if s.cfg.LogMedia {
 				s.logger.Log(context.Background(), levelTrace, "uplink: sending frame to AI", "codec", s.cfg.Codec, "bytes", len(f.data))
 			}
@@ -179,7 +185,8 @@ func (s *CallSession) runUplink() {
 			s.metrics.AudioFrameSent()
 		case <-timer.C:
 			// Silence suppression: phone stopped sending RTP. Feed silence
-			// to the AI so its VAD can detect end-of-speech.
+			// to the AI so its VAD can detect end-of-speech. Silence in
+			// L16 is all-zero bytes, identical in BE and LE — no swap.
 			if err := s.ai.SendAudio(silence); err != nil {
 				if s.ctx.Err() == nil {
 					s.logger.Error("uplink SendAudio error", "err", err)
@@ -210,10 +217,12 @@ func (s *CallSession) runDownlink() {
 		}
 	}
 
+	isL16 := s.cfg.Codec == "L16"
+
 	// Inner goroutine: AI recv -> adapter
 	go func() {
 		for {
-			g711, err := s.ai.RecvAudio(s.ctx)
+			data, err := s.ai.RecvAudio(s.ctx)
 			if err != nil {
 				if err != io.EOF && s.ctx.Err() == nil {
 					s.logger.Error("downlink RecvAudio error", "err", err)
@@ -222,31 +231,32 @@ func (s *CallSession) runDownlink() {
 				return
 			}
 			s.metrics.AudioFrameReceived()
+			// AI backends emit little-endian PCM; RTP L16 is big-endian.
+			if isL16 {
+				audio.SwapPCM16(data)
+			}
 			if s.cfg.LogMedia {
-				s.logger.Log(context.Background(), levelTrace, "downlink: AI audio received", "codec", s.cfg.Codec, "bytes", len(g711))
+				s.logger.Log(context.Background(), levelTrace, "downlink: AI audio received", "codec", s.cfg.Codec, "bytes", len(data))
 			}
 			if rxDump != nil {
-				rxDump.Write(g711) //nolint:errcheck
+				rxDump.Write(data) //nolint:errcheck
 			}
-			if _, err := s.adapter.Write(g711); err != nil {
+			if _, err := s.adapter.Write(data); err != nil {
 				return
 			}
 		}
 	}()
 
-	// G.711 ulaw silence = 0xFF per byte.
-	silence := make([]byte, audio.FrameBytesG711)
-	for i := range silence {
-		silence[i] = 0xFF
-	}
+	// Per-codec silence frame, sized to one 20ms tick.
+	silence := makeSilence(s.cfg.Codec, s.frameBytes)
 
 	// Outer loop: write one frame per diago's 20ms clock tick.
 	// TryRead returns audio if available, otherwise send silence to keep
 	// the RTP stream continuous (prevents SIP phone timeout).
 	// Diago's AudioWriter.Write blocks until the next 20ms tick internally.
-	g711Buf := make([]byte, audio.FrameBytesG711)
+	frameBuf := make([]byte, s.frameBytes)
 	for {
-		n, err := s.adapter.TryRead(g711Buf)
+		n, err := s.adapter.TryRead(frameBuf)
 		if err != nil {
 			// io.EOF: adapter closed, AI recv ended.
 			s.cancel()
@@ -254,7 +264,7 @@ func (s *CallSession) runDownlink() {
 		}
 		var frame []byte
 		if n > 0 {
-			frame = g711Buf[:n]
+			frame = frameBuf[:n]
 			if rtpDump != nil {
 				rtpDump.Write(frame) //nolint:errcheck
 			}
@@ -272,6 +282,19 @@ func (s *CallSession) runDownlink() {
 			return
 		}
 	}
+}
+
+// makeSilence returns a frameBytes-sized buffer filled with the codec's
+// silence pattern (0xFF for μ-law, 0xD5 for A-law, 0x00 for L16).
+func makeSilence(codec string, frameBytes int) []byte {
+	b := make([]byte, frameBytes)
+	fill := audio.SilenceByte(codec)
+	if fill != 0 {
+		for i := range b {
+			b[i] = fill
+		}
+	}
+	return b
 }
 
 // runHealthMonitor periodically pings the AI provider and triggers reconnect

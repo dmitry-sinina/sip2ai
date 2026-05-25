@@ -7,16 +7,16 @@ import (
 )
 
 // AudioAdapter accumulates variable-length byte chunks from an AI provider and
-// emits exactly FrameBytesG711-sized frames for RTP output.
+// emits exactly frameBytes-sized frames for RTP output. The frame size depends
+// on the negotiated codec (e.g. 160 for G.711 @8k, 960 for L16 @24k).
 //
-// Write is non-blocking; it drops the oldest data when the internal buffer
-// exceeds adapterBufCap. Read blocks until a full frame is available or Close
-// is called.
+// Read blocks until a full frame is available or Close is called.
 type AudioAdapter struct {
-	mu   sync.Mutex
-	cond *sync.Cond
-	buf  []byte
-	done bool
+	mu         sync.Mutex
+	cond       *sync.Cond
+	buf        []byte
+	done       bool
+	frameBytes int
 
 	logger       *slog.Logger
 	bytesIn      int64
@@ -24,14 +24,19 @@ type AudioAdapter struct {
 	bytesDropped int64
 }
 
-// NewAudioAdapter returns a ready-to-use AudioAdapter.
-func NewAudioAdapter(logger *slog.Logger) *AudioAdapter {
+// NewAudioAdapter returns a ready-to-use AudioAdapter. frameBytes is the
+// emit size (one 20ms RTP frame for the negotiated codec); must be > 0.
+func NewAudioAdapter(logger *slog.Logger, frameBytes int) *AudioAdapter {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if frameBytes <= 0 {
+		frameBytes = FrameBytesG711
+	}
 	a := &AudioAdapter{
-		buf:    make([]byte, 0, adapterBufCap),
-		logger: logger,
+		buf:        make([]byte, 0, adapterBufCap),
+		logger:     logger,
+		frameBytes: frameBytes,
 	}
 	a.cond = sync.NewCond(&a.mu)
 	return a
@@ -55,17 +60,17 @@ func (a *AudioAdapter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Read blocks until at least FrameBytesG711 bytes are available, then copies
-// exactly FrameBytesG711 bytes into p. p must be at least FrameBytesG711 bytes.
-// Returns io.EOF when Close has been called and the buffer is drained.
+// Read blocks until at least frameBytes are available, then copies exactly
+// frameBytes into p. p must be at least frameBytes long. Returns io.EOF when
+// Close has been called and the buffer is drained.
 func (a *AudioAdapter) Read(p []byte) (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for {
-		if len(a.buf) >= FrameBytesG711 {
-			n := copy(p, a.buf[:FrameBytesG711])
+		if len(a.buf) >= a.frameBytes {
+			n := copy(p, a.buf[:a.frameBytes])
 			a.bytesOut += int64(n)
-			a.buf = a.buf[FrameBytesG711:]
+			a.buf = a.buf[a.frameBytes:]
 			return n, nil
 		}
 		if a.done {
@@ -82,16 +87,16 @@ func (a *AudioAdapter) Read(p []byte) (int, error) {
 	}
 }
 
-// TryRead copies exactly FrameBytesG711 bytes into p if available.
+// TryRead copies exactly frameBytes into p if available.
 // Returns 0, nil if not enough data is buffered (non-blocking).
 // Returns 0, io.EOF if Close has been called and the buffer is drained.
 func (a *AudioAdapter) TryRead(p []byte) (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if len(a.buf) >= FrameBytesG711 {
-		n := copy(p, a.buf[:FrameBytesG711])
+	if len(a.buf) >= a.frameBytes {
+		n := copy(p, a.buf[:a.frameBytes])
 		a.bytesOut += int64(n)
-		a.buf = a.buf[FrameBytesG711:]
+		a.buf = a.buf[a.frameBytes:]
 		return n, nil
 	}
 	if a.done {

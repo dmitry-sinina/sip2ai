@@ -12,8 +12,9 @@ import (
 // AIProvider is the interface that all AI voice backends must implement.
 type AIProvider interface {
 	// Connect establishes the connection to the AI backend.
-	// codec is the negotiated SIP codec name ("PCMU" or "PCMA").
-	Connect(ctx context.Context, codec string) error
+	// codec is the negotiated SIP codec name ("PCMU", "PCMA", "L16") and
+	// rate is its sample rate in Hz (e.g. 8000, 16000, 24000).
+	Connect(ctx context.Context, codec string, rate uint32) error
 	// SendAudio accepts a raw G.711 encoded frame (160 bytes, ulaw or alaw
 	// depending on the codec passed to Connect).
 	SendAudio(frame []byte) error

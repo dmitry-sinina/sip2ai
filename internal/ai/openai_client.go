@@ -78,7 +78,7 @@ func (c *openAIClient) SetInterruptHandler(h func() int) {
 	c.interruptHandler = h
 }
 
-func (c *openAIClient) Connect(ctx context.Context, sipCodec string) error {
+func (c *openAIClient) Connect(ctx context.Context, sipCodec string, sipRate uint32) error {
 	wsURL := fmt.Sprintf("%s?model=%s", openAIEndpoint, c.cfg.Model)
 	dialOpts := &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
@@ -106,7 +106,7 @@ func (c *openAIClient) Connect(ctx context.Context, sipCodec string) error {
 		return fmt.Errorf("openai session.created: %w", err)
 	}
 
-	audioFmt := codecToOpenAI(sipCodec)
+	audioFmt := codecToOpenAI(sipCodec, sipRate)
 	c.outputBytesPerMs = outputBytesPerMs(audioFmt)
 	session := map[string]any{
 		"type":              "realtime",
@@ -564,20 +564,31 @@ func outputBytesPerMs(format map[string]any) int {
 		return 8
 	case "audio/pcm":
 		rate := 24000
-		if r, ok := format["rate"].(int); ok && r > 0 {
-			rate = r
+		switch r := format["rate"].(type) {
+		case int:
+			if r > 0 {
+				rate = r
+			}
+		case float64:
+			if r > 0 {
+				rate = int(r)
+			}
 		}
 		return (rate * 2) / 1000
 	}
 	return 8
 }
 
-func codecToOpenAI(codec string) map[string]any {
+func codecToOpenAI(codec string, rate uint32) map[string]any {
 	switch codec {
 	case "PCMA":
 		return map[string]any{"type": "audio/pcma"}
 	case "L16":
-		return map[string]any{"type": "audio/pcm", "rate": 24000}
+		r := 24000
+		if rate > 0 {
+			r = int(rate)
+		}
+		return map[string]any{"type": "audio/pcm", "rate": r}
 	default:
 		return map[string]any{"type": "audio/pcmu"}
 	}

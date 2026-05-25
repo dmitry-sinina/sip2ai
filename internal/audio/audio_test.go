@@ -46,7 +46,7 @@ func TestUlawRoundTrip(t *testing.T) {
 }
 
 func TestAdapterFraming(t *testing.T) {
-	a := NewAudioAdapter(nil)
+	a := NewAudioAdapter(nil, FrameBytesG711)
 	data := make([]byte, 500)
 	for i := range data {
 		data[i] = byte(i)
@@ -65,7 +65,7 @@ func TestAdapterFraming(t *testing.T) {
 }
 
 func TestAdapterConcurrency(t *testing.T) {
-	a := NewAudioAdapter(nil)
+	a := NewAudioAdapter(nil, FrameBytesG711)
 	const writers = 4
 	const writesPerWriter = 20
 	var wg sync.WaitGroup
@@ -96,7 +96,7 @@ func TestAdapterConcurrency(t *testing.T) {
 }
 
 func TestAdapterClose(t *testing.T) {
-	a := NewAudioAdapter(nil)
+	a := NewAudioAdapter(nil, FrameBytesG711)
 	go func() {
 		a.Close()
 	}()

@@ -110,7 +110,8 @@ func (c *deepgramClient) TransferCh() <-chan TransferRequest {
 	return c.transferCh
 }
 
-func (c *deepgramClient) Connect(ctx context.Context, sipCodec string) error {
+func (c *deepgramClient) Connect(ctx context.Context, sipCodec string, sipRate uint32) error {
+	_ = sipRate // deepgram derives codec params from sipCodec only
 	c.codec = sipCodec
 	enc, rate := codecToDeepgram(sipCodec)
 	settings := clientv1.NewSettingsOptions()

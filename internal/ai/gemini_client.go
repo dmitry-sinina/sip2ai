@@ -53,7 +53,8 @@ func newGeminiClient(cfg *config.GeminiConfig, logger *slog.Logger, logMedia boo
 	}
 }
 
-func (c *geminiClient) Connect(ctx context.Context, sipCodec string) error {
+func (c *geminiClient) Connect(ctx context.Context, sipCodec string, sipRate uint32) error {
+	_ = sipRate // gemini derives codec params from sipCodec only
 	c.sipCodec = sipCodec
 	wsURL := fmt.Sprintf("%s?key=%s", geminiEndpoint, c.cfg.APIKey)
 	var dialOpts *websocket.DialOptions
