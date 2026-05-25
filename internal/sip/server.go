@@ -38,7 +38,8 @@ type Server struct {
 
 // NewServer constructs and configures a Server but does not start it.
 func NewServer(cfg *config.Config, aiFactory func(cid string, cfg *config.Config) ai.AIProvider, logger *slog.Logger, version string, rec *metrics.Recorder) (*Server, error) {
-	ua, err := sipgo.NewUA(sipgo.WithUserAgent("sip2ai/" + version))
+	// Empty contact_user produces a userless Contact URI (<sip:host:port>).
+	ua, err := sipgo.NewUA(sipgo.WithUserAgent(cfg.SIP.ContactUser))
 	if err != nil {
 		return nil, fmt.Errorf("sipgo UA: %w", err)
 	}

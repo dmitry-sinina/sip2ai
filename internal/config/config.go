@@ -36,6 +36,10 @@ type SIPConfig struct {
 	ExternalHost    string `yaml:"external_host"`
 	ExternalPort    int    `yaml:"external_port"`
 	MediaExternalIP string `yaml:"media_external_ip"`
+	// ContactUser is placed in the user part of the Contact URI
+	// (and is also returned by the UA's Name()). Empty (default) emits a
+	// userless Contact like <sip:host:port>. Set to e.g. "sip2ai" to brand.
+	ContactUser string `yaml:"contact_user"`
 }
 
 type AIConfig struct {
