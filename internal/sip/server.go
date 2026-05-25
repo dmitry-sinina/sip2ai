@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -164,7 +165,9 @@ func (s *Server) handleCall(dialog *diago.DialogServerSession) {
 		s.metrics.AIConnectDuration(callCfg.AI.Provider, time.Since(connectStart))
 		s.metrics.CallEnded(callCfg.AI.Provider, callCfg.AI.Codec, callStatus, time.Since(callStart))
 		log.Error("AI connect failed, rejecting call", "err", err)
-		dialog.Respond(sipsip.StatusServiceUnavailable, "Service Unavailable", nil) //nolint:errcheck
+		dialog.Respond(sipsip.StatusServiceUnavailable, "Service Unavailable", nil, //nolint:errcheck
+			sipsip.NewHeader("X-AI-Error", sanitizeHeaderValue(err.Error())),
+		)
 		return
 	}
 	s.metrics.AIConnectDuration(callCfg.AI.Provider, time.Since(connectStart))
@@ -224,6 +227,23 @@ func (s *Server) handleCall(dialog *diago.DialogServerSession) {
 			}
 		}
 	}
+}
+
+// sanitizeHeaderValue strips control chars (CR/LF would corrupt the SIP
+// message frame) and caps length so an upstream error string can be safely
+// embedded in a single-line SIP header.
+func sanitizeHeaderValue(s string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	const maxLen = 256
+	if len(cleaned) > maxLen {
+		cleaned = cleaned[:maxLen]
+	}
+	return cleaned
 }
 
 // parseConfigHeader extracts and parses the X-Sip2ai-Config JSON header.

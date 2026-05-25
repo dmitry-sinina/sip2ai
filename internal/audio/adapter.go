@@ -100,6 +100,19 @@ func (a *AudioAdapter) TryRead(p []byte) (int, error) {
 	return 0, nil
 }
 
+// Drain discards all buffered audio without closing the adapter. Used for
+// caller barge-in: when the AI detects the caller has started speaking, we
+// flush any pre-buffered TTS so the caller isn't talked over by audio the
+// model already generated. Returns the number of bytes dropped.
+func (a *AudioAdapter) Drain() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := len(a.buf)
+	a.buf = a.buf[:0]
+	a.bytesDropped += int64(n)
+	return n
+}
+
 // Close signals the adapter to stop. Any blocked Read will return io.EOF.
 func (a *AudioAdapter) Close() error {
 	a.mu.Lock()

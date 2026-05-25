@@ -45,6 +45,13 @@ type openAIClient struct {
 	lastRecv   time.Time
 	mu         sync.Mutex
 	usage      openAIUsage
+
+	// Barge-in / interrupt handling.
+	interruptHandler   func() int // installed by CallSession; flushes adapter, returns pending bytes
+	outputBytesPerMs   int        // derived from session output audio format
+	currentItemID      string     // item_id of the audio response currently being streamed
+	currentItemBytes   int        // total decoded audio bytes queued for currentItemID
+	responseInProgress bool       // true between response.created and response.done
 }
 
 func newOpenAIClient(cfg *config.OpenAIConfig, transfers map[string]string, logger *slog.Logger, logMedia bool, rec *metrics.Recorder) *openAIClient {
@@ -63,6 +70,12 @@ func newOpenAIClient(cfg *config.OpenAIConfig, transfers map[string]string, logg
 
 func (c *openAIClient) TransferCh() <-chan TransferRequest {
 	return c.transferCh
+}
+
+// SetInterruptHandler installs the barge-in callback. Must be called before
+// the recv loop sees any speech_started events (i.e. before audio flows).
+func (c *openAIClient) SetInterruptHandler(h func() int) {
+	c.interruptHandler = h
 }
 
 func (c *openAIClient) Connect(ctx context.Context, sipCodec string) error {
@@ -94,6 +107,7 @@ func (c *openAIClient) Connect(ctx context.Context, sipCodec string) error {
 	}
 
 	audioFmt := codecToOpenAI(sipCodec)
+	c.outputBytesPerMs = outputBytesPerMs(audioFmt)
 	session := map[string]any{
 		"type":              "realtime",
 		"instructions":      c.cfg.SystemPrompt,
@@ -235,6 +249,18 @@ func (c *openAIClient) recvLoop(ctx context.Context) {
 				c.logger.Debug("openai: base64 decode error", "err", err)
 				continue
 			}
+			// Track per-item byte count so a later barge-in can tell OpenAI
+			// exactly how many ms the caller actually heard.
+			if itemRaw, ok := msg["item_id"]; ok {
+				var itemID string
+				if err := json.Unmarshal(itemRaw, &itemID); err == nil && itemID != "" {
+					if itemID != c.currentItemID {
+						c.currentItemID = itemID
+						c.currentItemBytes = 0
+					}
+					c.currentItemBytes += len(g711Data)
+				}
+			}
 			if c.logMedia {
 				c.logger.Log(ctx, LevelTrace, "openai rx audio delta", "g711_bytes", len(g711Data))
 			}
@@ -243,6 +269,16 @@ func (c *openAIClient) recvLoop(ctx context.Context) {
 			default:
 				c.logger.Warn("openai: recvCh full, dropping audio frame", "g711_bytes", len(g711Data))
 			}
+		case "input_audio_buffer.speech_started":
+			c.handleBargeIn(ctx)
+			if raw, err := json.MarshalIndent(msg, "", "  "); err == nil {
+				c.logger.Log(ctx, LevelTrace, fmt.Sprintf("openai rx event type=%s\n%s", eventType, raw))
+			}
+		case "response.created":
+			c.responseInProgress = true
+			if raw, err := json.MarshalIndent(msg, "", "  "); err == nil {
+				c.logger.Log(ctx, LevelTrace, fmt.Sprintf("openai rx event type=%s\n%s", eventType, raw))
+			}
 		case "response.output_item.done":
 			c.handleOutputItem(ctx, msg)
 			if raw, err := json.MarshalIndent(msg, "", "  "); err == nil {
@@ -250,13 +286,21 @@ func (c *openAIClient) recvLoop(ctx context.Context) {
 			}
 		case "response.done":
 			c.parseUsage(msg)
+			c.responseInProgress = false
+			// Item finished cleanly — no truncation will apply to it anymore.
+			c.currentItemID = ""
+			c.currentItemBytes = 0
 			if raw, err := json.MarshalIndent(msg, "", "  "); err == nil {
 				c.logger.Log(ctx, LevelTrace, fmt.Sprintf("openai rx event type=%s\n%s", eventType, raw))
 			}
 		case "error":
+			// Application-level errors (e.g. "cancel failed: no active
+			// response") are per-request and must not tear down the call.
+			// Real connection failures surface via the wsjson.Read error
+			// path above instead.
 			c.metrics.AIError("openai", "server_error")
 			errRaw, _ := json.Marshal(msg)
-			c.errCh <- fmt.Errorf("openai server error: %s", errRaw)
+			c.logger.Warn("openai: server error event", "raw", string(errRaw))
 		default:
 			if raw, err := json.MarshalIndent(msg, "", "  "); err == nil {
 				c.logger.Log(ctx, LevelTrace, fmt.Sprintf("openai rx event type=%s\n%s", eventType, raw))
@@ -437,6 +481,95 @@ func (c *openAIClient) parseUsage(msg map[string]json.RawMessage) {
 	c.usage.OutputAudio += u.OutputDetail.AudioTokens
 	c.mu.Unlock()
 	c.metrics.TokensUsed("openai", u.InputDetail.TextTokens, u.InputDetail.AudioTokens, u.OutputDetail.TextTokens, u.OutputDetail.AudioTokens)
+}
+
+// handleBargeIn is called when OpenAI VAD reports caller speech started while
+// we may still be playing AI audio. We must (a) stop sending more audio to
+// the caller and (b) tell OpenAI how much of the current item the caller
+// actually heard, so its conversation history is truthful.
+func (c *openAIClient) handleBargeIn(ctx context.Context) {
+	if c.interruptHandler == nil {
+		return
+	}
+	// Drain anything already queued in recvCh — those bytes were counted in
+	// currentItemBytes but haven't even reached the adapter yet, so from the
+	// caller's perspective they were never heard.
+	drainedRecvBytes := 0
+DRAIN:
+	for {
+		select {
+		case d := <-c.recvCh:
+			drainedRecvBytes += len(d)
+		default:
+			break DRAIN
+		}
+	}
+	// Flush the downstream playback buffer; result is bytes that had arrived
+	// at the adapter but were not yet shipped on RTP.
+	pendingAdapter := c.interruptHandler()
+
+	itemID := c.currentItemID
+	playedBytes := c.currentItemBytes - drainedRecvBytes - pendingAdapter
+	if playedBytes < 0 {
+		playedBytes = 0
+	}
+	playedMs := 0
+	if c.outputBytesPerMs > 0 {
+		playedMs = playedBytes / c.outputBytesPerMs
+	}
+
+	if itemID != "" && playedMs > 0 {
+		truncate := map[string]any{
+			"type":          "conversation.item.truncate",
+			"item_id":       itemID,
+			"content_index": 0,
+			"audio_end_ms":  playedMs,
+		}
+		c.sendMu.Lock()
+		err := wsjson.Write(ctx, c.conn, truncate)
+		c.sendMu.Unlock()
+		if err != nil {
+			c.logger.Warn("openai: truncate write failed", "err", err)
+		}
+	}
+
+	if c.responseInProgress {
+		c.sendMu.Lock()
+		err := wsjson.Write(ctx, c.conn, map[string]any{"type": "response.cancel"})
+		c.sendMu.Unlock()
+		if err != nil {
+			c.logger.Warn("openai: response.cancel write failed", "err", err)
+		}
+	}
+
+	c.logger.Info("openai: barge-in",
+		"item_id", itemID,
+		"played_ms", playedMs,
+		"dropped_adapter_bytes", pendingAdapter,
+		"dropped_recvch_bytes", drainedRecvBytes,
+		"response_in_progress", c.responseInProgress,
+	)
+
+	c.currentItemID = ""
+	c.currentItemBytes = 0
+}
+
+// outputBytesPerMs returns the byte rate per millisecond implied by the
+// OpenAI output audio format object. G.711 is 8 kHz × 1 byte = 8 bytes/ms;
+// PCM at 24 kHz × 2 bytes = 48 bytes/ms.
+func outputBytesPerMs(format map[string]any) int {
+	t, _ := format["type"].(string)
+	switch t {
+	case "audio/pcmu", "audio/pcma":
+		return 8
+	case "audio/pcm":
+		rate := 24000
+		if r, ok := format["rate"].(int); ok && r > 0 {
+			rate = r
+		}
+		return (rate * 2) / 1000
+	}
+	return 8
 }
 
 func codecToOpenAI(codec string) map[string]any {

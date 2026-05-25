@@ -37,6 +37,17 @@ type Transferable interface {
 	TransferCh() <-chan TransferRequest
 }
 
+// Interruptible is an optional interface for providers that support caller
+// barge-in. The provider invokes the registered handler when it detects the
+// caller has started speaking; the handler must flush any locally-buffered
+// playback audio and return the number of bytes that were still pending
+// (i.e. queued but not yet sent on the wire). The provider uses that count
+// to tell the AI backend how much of the in-flight utterance was actually
+// heard by the caller.
+type Interruptible interface {
+	SetInterruptHandler(func() (pendingBytes int))
+}
+
 // ProviderType identifies an AI backend.
 type ProviderType string
 

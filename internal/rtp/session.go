@@ -86,6 +86,11 @@ func NewCallSession(
 	if t, ok := provider.(ai.Transferable); ok {
 		s.transferCh = t.TransferCh()
 	}
+	if i, ok := provider.(ai.Interruptible); ok {
+		i.SetInterruptHandler(func() int {
+			return s.adapter.Drain()
+		})
+	}
 	return s
 }
 
