@@ -4,7 +4,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /sip2ai ./cmd/sip2ai
+ARG BUILD_TIME
+RUN BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
+    CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" -o /sip2ai ./cmd/sip2ai
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=builder /sip2ai /sip2ai

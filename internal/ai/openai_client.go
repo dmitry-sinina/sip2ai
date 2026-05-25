@@ -70,7 +70,6 @@ func (c *openAIClient) Connect(ctx context.Context, sipCodec string) error {
 	dialOpts := &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
 			"Authorization": {"Bearer " + c.cfg.APIKey},
-			"OpenAI-Beta":   {"realtime=v1"},
 		},
 	}
 	if c.cfg.Proxy != "" {
@@ -96,15 +95,22 @@ func (c *openAIClient) Connect(ctx context.Context, sipCodec string) error {
 
 	audioFmt := codecToOpenAI(sipCodec)
 	session := map[string]any{
-		"modalities":          []string{"audio", "text"},
-		"input_audio_format":  audioFmt,
-		"output_audio_format": audioFmt,
-		"voice":               c.cfg.Voice,
-		"instructions":        c.cfg.SystemPrompt,
-		"turn_detection": map[string]any{
-			"type":                "server_vad",
-			"silence_duration_ms": 500,
-			"create_response":     true,
+		"type":              "realtime",
+		"instructions":      c.cfg.SystemPrompt,
+		"output_modalities": []string{"audio"},
+		"audio": map[string]any{
+			"input": map[string]any{
+				"format": audioFmt,
+				"turn_detection": map[string]any{
+					"type":                "server_vad",
+					"silence_duration_ms": 500,
+					"create_response":     true,
+				},
+			},
+			"output": map[string]any{
+				"format": audioFmt,
+				"voice":  c.cfg.Voice,
+			},
 		},
 	}
 	tools := []map[string]any{
@@ -160,7 +166,6 @@ func (c *openAIClient) Connect(ctx context.Context, sipCodec string) error {
 			"type": "response.create",
 			"response": map[string]any{
 				"instructions": "Say the following greeting to the caller, then wait for their response: " + c.cfg.Greeting,
-				"modalities":   []string{"audio", "text"},
 			},
 		}
 		c.sendMu.Lock()
@@ -215,7 +220,7 @@ func (c *openAIClient) recvLoop(ctx context.Context) {
 		json.Unmarshal(typeRaw, &eventType) //nolint:errcheck
 
 		switch eventType {
-		case "response.audio.delta":
+		case "response.output_audio.delta", "response.audio.delta":
 			audioRaw, ok := msg["delta"]
 			if !ok {
 				continue
@@ -380,7 +385,6 @@ func (c *openAIClient) sendResponseCreate(ctx context.Context, instructions stri
 		"type": "response.create",
 		"response": map[string]any{
 			"instructions": instructions,
-			"modalities":   []string{"audio", "text"},
 		},
 	})
 }
@@ -435,13 +439,13 @@ func (c *openAIClient) parseUsage(msg map[string]json.RawMessage) {
 	c.metrics.TokensUsed("openai", u.InputDetail.TextTokens, u.InputDetail.AudioTokens, u.OutputDetail.TextTokens, u.OutputDetail.AudioTokens)
 }
 
-func codecToOpenAI(codec string) string {
+func codecToOpenAI(codec string) map[string]any {
 	switch codec {
 	case "PCMA":
-		return "g711_alaw"
+		return map[string]any{"type": "audio/pcma"}
 	case "L16":
-		return "pcm16"
+		return map[string]any{"type": "audio/pcm", "rate": 24000}
 	default:
-		return "g711_ulaw"
+		return map[string]any{"type": "audio/pcmu"}
 	}
 }
