@@ -89,6 +89,7 @@ sip2openai:
     openai:
       model: "gpt-realtime"
       base_url: "https://api.openai.com"
+      proxy: ""  # http/https/socks5 URL for signaling; empty = use *_PROXY env
       voice: "alloy"
       system_prompt: "You are a helpful voice assistant on a phone call. Keep replies concise."
       greeting: "Hello! How can I help you today?"

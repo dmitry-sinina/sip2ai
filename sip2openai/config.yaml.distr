@@ -19,6 +19,10 @@ openai:
   api_key: ""        # or env OPENAI_API_KEY
   model: gpt-realtime
   base_url: https://api.openai.com
+  # Route signaling requests through a proxy (http/https/socks5). Or env
+  # OPENAI_PROXY. Empty falls back to HTTPS_PROXY/HTTP_PROXY. Media is never
+  # proxied — it flows directly between caller and OpenAI.
+  proxy: ""
   voice: alloy
   system_prompt: "You are a helpful voice assistant on a phone call. Keep replies concise."
   greeting: "Hello! How can I help you today?"

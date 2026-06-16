@@ -42,7 +42,11 @@ func main() {
 		logger.Error("OpenAI API key missing (set openai.api_key or OPENAI_API_KEY)")
 		os.Exit(1)
 	}
-	oai := openai.New(cfg.OpenAI.APIKey, cfg.OpenAI.Model, cfg.OpenAI.BaseURL)
+	oai, err := openai.New(cfg.OpenAI.APIKey, cfg.OpenAI.Model, cfg.OpenAI.BaseURL, cfg.OpenAI.Proxy)
+	if err != nil {
+		logger.Error("create OpenAI client", "err", err)
+		os.Exit(1)
+	}
 
 	srv, err := sipsrv.New(cfg.SIP, cfg.OpenAI, cfg.Transfers, oai, logger)
 	if err != nil {

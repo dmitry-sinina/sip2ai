@@ -34,6 +34,11 @@ type OpenAIConfig struct {
 	APIKey  string `yaml:"api_key"`  // or env OPENAI_API_KEY
 	Model   string `yaml:"model"`    // default gpt-realtime
 	BaseURL string `yaml:"base_url"` // default https://api.openai.com
+	// Proxy routes all signaling requests through the given URL
+	// (http/https/socks5). Empty falls back to HTTPS_PROXY/HTTP_PROXY env vars.
+	// or env OPENAI_PROXY. Note: media flows caller<->OpenAI directly and is
+	// never proxied.
+	Proxy string `yaml:"proxy"`
 
 	// Sideband session config (M2).
 	Voice            string `yaml:"voice"`              // output voice, default alloy
@@ -90,6 +95,9 @@ func Load(path string) (Config, error) {
 func applyEnv(cfg *Config) {
 	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 		cfg.OpenAI.APIKey = v
+	}
+	if v := os.Getenv("OPENAI_PROXY"); v != "" {
+		cfg.OpenAI.Proxy = v
 	}
 	if v := os.Getenv("SIP_BIND_HOST"); v != "" {
 		cfg.SIP.BindHost = v
