@@ -1,0 +1,35 @@
+# sip2openai stage-1 config. Precedence: defaults < this file < environment.
+
+sip:
+  bind_host: 0.0.0.0
+  bind_port: 5060
+  # Contact host/port advertised to callers. Set external_host to the routable
+  # IP when behind NAT/load balancer; defaults to bind_host/bind_port.
+  external_host: ""
+  external_port: 0
+  # Raise sipgo's UDP message cap (default sipgo limit is 1300 B) so the 200 OK
+  # carrying OpenAI's WebRTC answer can be sent over UDP. Above the real path
+  # MTU this relies on IP fragmentation — fine on a controlled network.
+  udp_mtu: 4096
+  # Also listen on TCP so callers MAY send oversized messages over TCP per
+  # RFC 3261 (responses follow the request's Via transport).
+  enable_tcp: true
+
+openai:
+  api_key: ""        # or env OPENAI_API_KEY
+  model: gpt-realtime
+  base_url: https://api.openai.com
+  voice: alloy
+  system_prompt: "You are a helpful voice assistant on a phone call. Keep replies concise."
+  greeting: "Hello! How can I help you today?"
+  hangup_tool_desc: "End the call when the conversation is complete or the caller asks to hang up."
+  transfer_tool_desc: "Transfer the caller to another department or person."
+
+# Optional transfer destinations (name -> SIP/tel URI). Enables transfer_call.
+# transfers:
+#   support: "tel:+15551234567"
+#   sales: "sip:sales@example.com"
+
+log:
+  level: info        # debug|info|warn|error
+  format: text       # text|json

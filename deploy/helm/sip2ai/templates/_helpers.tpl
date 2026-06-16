@@ -39,3 +39,20 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "sip2ai.imageTag" -}}
 {{- default .Chart.AppVersion .Values.image.tag }}
 {{- end }}
+
+{{- define "sip2openai.fullname" -}}
+{{- printf "%s-openai" (include "sip2ai.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "sip2openai.labels" -}}
+helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+{{ include "sip2openai.selectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/component: sip2openai
+{{- end }}
+
+{{- define "sip2openai.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "sip2ai.name" . }}-openai
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

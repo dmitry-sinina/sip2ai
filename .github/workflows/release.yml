@@ -28,12 +28,15 @@ jobs:
           sed -i "s/^version:.*/version: ${VERSION}/" deploy/helm/sip2ai/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deploy/helm/sip2ai/Chart.yaml
 
-      - name: Build binary
+      - name: Build binaries
         env:
           CGO_ENABLED: "0"
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           go build -ldflags="-s -w -X main.version=${VERSION}" -o sip2ai ./cmd/sip2ai
+          # sip2openai is a separate Go module; build it into build/ to avoid
+          # colliding with the sip2openai/ source directory at the repo root.
+          (cd sip2openai && go build -ldflags="-s -w" -o ../build/sip2openai ./cmd/sip2openai)
 
       - name: Build deb package
         run: |
@@ -42,10 +45,13 @@ jobs:
           mkdir -p "${PKG_DIR}/DEBIAN"
           mkdir -p "${PKG_DIR}/usr/bin"
           mkdir -p "${PKG_DIR}/etc/sip2ai"
+          mkdir -p "${PKG_DIR}/etc/sip2openai"
           mkdir -p "${PKG_DIR}/lib/systemd/system"
 
           cp sip2ai "${PKG_DIR}/usr/bin/"
+          cp build/sip2openai "${PKG_DIR}/usr/bin/"
           cp config.yaml.distr "${PKG_DIR}/etc/sip2ai/config.yaml.distr"
+          cp sip2openai/config.yaml.distr "${PKG_DIR}/etc/sip2openai/config.yaml.distr"
 
           cat > "${PKG_DIR}/DEBIAN/control" <<EOF
           Package: sip2ai
@@ -57,10 +63,13 @@ jobs:
           Description: SIP-to-AI voice bridge
            Bridges inbound SIP calls to AI voice APIs
            (OpenAI Realtime, Deepgram Voice Agent, Gemini Live).
+           Also ships sip2openai, a signaling-only SIP-to-OpenAI Realtime
+           gateway where media flows directly between caller and OpenAI.
           EOF
 
           cat > "${PKG_DIR}/DEBIAN/conffiles" <<EOF
           /etc/sip2ai/config.yaml.distr
+          /etc/sip2openai/config.yaml.distr
           EOF
 
           cat > "${PKG_DIR}/lib/systemd/system/sip2ai.service" <<EOF
@@ -72,6 +81,23 @@ jobs:
           Type=simple
           ExecStart=/usr/bin/sip2ai
           WorkingDirectory=/etc/sip2ai
+          Restart=on-failure
+          RestartSec=5
+          LimitNOFILE=65535
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          cat > "${PKG_DIR}/lib/systemd/system/sip2openai.service" <<EOF
+          [Unit]
+          Description=SIP-to-OpenAI Realtime signaling gateway
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/bin/sip2openai
+          WorkingDirectory=/etc/sip2openai
           Restart=on-failure
           RestartSec=5
           LimitNOFILE=65535

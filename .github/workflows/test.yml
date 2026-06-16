@@ -24,3 +24,16 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      # sip2openai is a separate Go module; build/test/vet it on its own.
+      - name: Build sip2openai
+        working-directory: sip2openai
+        run: go build ./...
+
+      - name: Test sip2openai
+        working-directory: sip2openai
+        run: go test -race -v ./...
+
+      - name: Vet sip2openai
+        working-directory: sip2openai
+        run: go vet ./...

@@ -1,0 +1,69 @@
+{{- if .Values.sip2openai.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sip2openai.fullname" . }}
+  labels:
+    {{- include "sip2openai.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.sip2openai.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "sip2openai.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/sip2openai-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "sip2openai.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: sip2openai
+          image: "{{ .Values.image.repository }}:{{ include "sip2ai.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Same image as sip2ai; run the signaling-only gateway binary instead.
+          command: ["/sip2openai"]
+          args: ["-config", "/etc/sip2openai/config.yaml"]
+          ports:
+            - name: sip
+              containerPort: {{ .Values.sip2openai.config.sip.bind_port }}
+              protocol: {{ .Values.sip2openai.service.sipProtocol }}
+          env:
+            - name: SIP_BIND_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sip2ai.secretName" . }}
+                  key: openai
+                  optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/sip2openai/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          resources:
+            {{- toYaml .Values.sip2openai.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "sip2openai.fullname" . }}
+      {{- with .Values.sip2openai.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.sip2openai.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.sip2openai.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,18 @@
+{{- if .Values.sip2openai.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sip2openai.fullname" . }}
+  labels:
+    {{- include "sip2openai.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.sip2openai.service.type }}
+  clusterIP: None
+  ports:
+    - name: sip
+      port: {{ .Values.sip2openai.service.sipPort }}
+      targetPort: sip
+      protocol: {{ .Values.sip2openai.service.sipProtocol }}
+  selector:
+    {{- include "sip2openai.selectorLabels" . | nindent 4 }}
+{{- end }}

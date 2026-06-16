@@ -57,6 +57,48 @@ config:
     system_prompt: "You are a helpful voice assistant."
   transfers: {}
 
+# sip2openai — signaling-only SIP-to-OpenAI Realtime gateway. Runs from the same
+# image (command overridden to /sip2openai). Disabled by default; enable to
+# deploy it alongside (or instead of) sip2ai. Reuses the same secret (key "openai").
+sip2openai:
+  enabled: false
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    sipPort: 5060
+    sipProtocol: UDP
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: "1"
+      memory: 128Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # sip2openai config.yaml content — rendered as a ConfigMap.
+  config:
+    sip:
+      bind_host: "0.0.0.0"
+      bind_port: 5060
+      external_host: ""
+      external_port: 0
+      udp_mtu: 4096
+      enable_tcp: true
+    openai:
+      model: "gpt-realtime"
+      base_url: "https://api.openai.com"
+      voice: "alloy"
+      system_prompt: "You are a helpful voice assistant on a phone call. Keep replies concise."
+      greeting: "Hello! How can I help you today?"
+      hangup_tool_desc: "End the call when the conversation is complete or the caller asks to hang up."
+      transfer_tool_desc: "Transfer the caller to another department or person."
+    log:
+      level: "info"
+      format: "text"
+    transfers: {}
+
 # API keys — reference existing Kubernetes secrets.
 # The secret must have keys matching the provider name (e.g. "openai", "deepgram", "gemini").
 existingSecret: ""

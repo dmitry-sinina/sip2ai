@@ -1,0 +1,11 @@
+{{- if .Values.sip2openai.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sip2openai.fullname" . }}
+  labels:
+    {{- include "sip2openai.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- .Values.sip2openai.config | toYaml | nindent 4 }}
+{{- end }}
