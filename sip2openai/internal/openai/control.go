@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,10 @@ const (
 	keepaliveInterval = 20 * time.Second
 	staleTimeout      = 45 * time.Second
 )
+
+// LevelTrace mirrors the gateway's trace level (below slog.LevelDebug); full
+// sideband event payloads are logged at this level.
+const LevelTrace = slog.Level(-8)
 
 // ControlOptions configures the Realtime session over the sideband WebSocket.
 // Audio formats are intentionally omitted: in WebRTC mode media is negotiated
@@ -40,6 +45,11 @@ type Control struct {
 	wsURL  string
 	opts   ControlOptions
 	log    *slog.Logger
+	// httpClient is the handshake client for the sideband WS dial. nil lets
+	// websocket.Dial use http.DefaultClient (which honors *_PROXY env vars);
+	// non-nil carries the explicitly configured proxy. It must not set a
+	// Timeout — that would kill the long-lived connection.
+	httpClient *http.Client
 
 	// OnHangup is invoked when the model calls hangup_call.
 	OnHangup func()
@@ -67,12 +77,19 @@ type usage struct {
 // NewControl builds a control client for an existing call_id. The WebSocket URL
 // is derived from the client's BaseURL (https->wss).
 func (c *Client) NewControl(callID string, opts ControlOptions, log *slog.Logger) *Control {
+	// Reuse the configured proxy for the WS handshake. A fresh client (no
+	// Timeout) wraps the shared transport; nil when no explicit proxy is set.
+	var httpClient *http.Client
+	if c.proxyTransport != nil {
+		httpClient = &http.Client{Transport: c.proxyTransport}
+	}
 	return &Control{
-		apiKey: c.APIKey,
-		wsURL:  wsURLFromBase(c.BaseURL, callID),
-		opts:   opts,
-		log:    log,
-		done:   make(chan struct{}),
+		apiKey:     c.APIKey,
+		wsURL:      wsURLFromBase(c.BaseURL, callID),
+		opts:       opts,
+		log:        log,
+		httpClient: httpClient,
+		done:       make(chan struct{}),
 	}
 }
 
@@ -91,6 +108,7 @@ func wsURLFromBase(base, callID string) string {
 // initial dial/config fails; the call's media is unaffected either way.
 func (ct *Control) Start(ctx context.Context) error {
 	conn, _, err := websocket.Dial(ctx, ct.wsURL, &websocket.DialOptions{
+		HTTPClient: ct.httpClient,
 		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + ct.apiKey}},
 	})
 	if err != nil {
@@ -199,6 +217,11 @@ func (ct *Control) recvLoop() {
 		var t string
 		if raw, ok := msg["type"]; ok {
 			json.Unmarshal(raw, &t) //nolint:errcheck
+		}
+		// trace: dump the full inbound event payload (multiline; the siplog
+		// handler prints it verbatim).
+		if raw, err := json.MarshalIndent(msg, "", "  "); err == nil {
+			ct.log.Log(context.Background(), LevelTrace, fmt.Sprintf("openai rx event type=%s\n%s", t, raw))
 		}
 		switch t {
 		case "response.output_item.done":
@@ -341,6 +364,10 @@ func (ct *Control) parseUsage(msg map[string]json.RawMessage) {
 }
 
 func (ct *Control) write(ctx context.Context, v any) error {
+	// trace: dump the full outbound event payload.
+	if raw, err := json.MarshalIndent(v, "", "  "); err == nil {
+		ct.log.Log(ctx, LevelTrace, "openai tx event\n"+string(raw))
+	}
 	ct.sendMu.Lock()
 	defer ct.sendMu.Unlock()
 	return wsjson.Write(ctx, ct.conn, v)

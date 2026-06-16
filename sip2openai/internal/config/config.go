@@ -49,8 +49,13 @@ type OpenAIConfig struct {
 }
 
 type LogConfig struct {
-	Level  string `yaml:"level"`  // debug|info|warn|error
+	Level  string `yaml:"level"`  // base: trace|debug|info|warn|error
 	Format string `yaml:"format"` // text|json
+	// Per-component levels; empty falls back to Level. SIP controls the sipgo
+	// stack (full SIP message dumps at debug, FSM traces at trace); OpenAI
+	// controls sideband signaling (full WS event payloads at trace).
+	SIP    string `yaml:"sip"`
+	OpenAI string `yaml:"openai"`
 }
 
 // Default returns the baseline config before YAML/env are applied.

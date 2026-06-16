@@ -35,5 +35,10 @@ openai:
 #   sales: "sip:sales@example.com"
 
 log:
-  level: info        # debug|info|warn|error
+  level: info        # base: trace|debug|info|warn|error
   format: text       # text|json
+  # Per-component levels (empty = use level above).
+  # sip=debug dumps full SIP messages; sip=trace adds transaction FSM traces.
+  # openai=trace dumps full sideband WebSocket event payloads.
+  sip: ""
+  openai: ""

@@ -4,6 +4,7 @@ go 1.23.0
 
 require (
 	github.com/emiago/sipgo v1.2.1
+	github.com/lmittmann/tint v1.1.3
 	gopkg.in/yaml.v3 v3.0.1
 	nhooyr.io/websocket v1.8.17
 )

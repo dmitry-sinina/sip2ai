@@ -23,12 +23,18 @@ type Client struct {
 	Model   string
 	BaseURL string
 	HTTP    *http.Client
+	// proxyTransport is non-nil only when an explicit proxy was configured; it
+	// is shared with the sideband WebSocket dial so both the SDP call and the
+	// control plane route through the same proxy. nil = use Go's default
+	// transport (which still honors HTTPS_PROXY/HTTP_PROXY/NO_PROXY).
+	proxyTransport *http.Transport
 }
 
 // New builds a calls client. Empty model/baseURL fall back to GA defaults.
-// proxy, if non-empty, is the URL all signaling requests are routed through
-// (e.g. http://host:3128 or socks5://host:1080); empty leaves Go's default
-// transport in place, which still honors HTTPS_PROXY/HTTP_PROXY/NO_PROXY.
+// proxy, if non-empty, is the URL all signaling requests (the SDP call and the
+// sideband control WebSocket) are routed through (e.g. http://host:3128 or
+// socks5://host:1080); empty leaves Go's default transport in place, which
+// still honors HTTPS_PROXY/HTTP_PROXY/NO_PROXY.
 func New(apiKey, model, baseURL, proxy string) (*Client, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -37,18 +43,21 @@ func New(apiKey, model, baseURL, proxy string) (*Client, error) {
 		model = "gpt-realtime"
 	}
 	httpClient := &http.Client{Timeout: 20 * time.Second}
+	var transport *http.Transport
 	if proxy != "" {
 		u, err := url.Parse(proxy)
 		if err != nil {
 			return nil, fmt.Errorf("parse openai proxy %q: %w", proxy, err)
 		}
-		httpClient.Transport = &http.Transport{Proxy: http.ProxyURL(u)}
+		transport = &http.Transport{Proxy: http.ProxyURL(u)}
+		httpClient.Transport = transport
 	}
 	return &Client{
-		APIKey:  apiKey,
-		Model:   model,
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		HTTP:    httpClient,
+		APIKey:         apiKey,
+		Model:          model,
+		BaseURL:        strings.TrimRight(baseURL, "/"),
+		HTTP:           httpClient,
+		proxyTransport: transport,
 	}, nil
 }
 

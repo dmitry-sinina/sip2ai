@@ -96,8 +96,10 @@ sip2openai:
       hangup_tool_desc: "End the call when the conversation is complete or the caller asks to hang up."
       transfer_tool_desc: "Transfer the caller to another department or person."
     log:
-      level: "info"
+      level: "info"   # base: trace|debug|info|warn|error
       format: "text"
+      sip: ""         # debug=full SIP messages, trace=+FSM traces; empty=level
+      openai: ""      # trace=full sideband WS event payloads; empty=level
     transfers: {}
 
 # API keys — reference existing Kubernetes secrets.

@@ -32,7 +32,8 @@ type Server struct {
 	sipCfg    config.SIPConfig
 	oaiCfg    config.OpenAIConfig
 	transfers map[string]string
-	log       *slog.Logger
+	log       *slog.Logger // app-level SIP handler events
+	oaiLog    *slog.Logger // OpenAI sideband signaling (own log level)
 	oai       *openai.Client
 
 	ua  *sipgo.UserAgent
@@ -45,7 +46,7 @@ type Server struct {
 }
 
 // New wires the sipgo UA/server/dialog cache and registers handlers.
-func New(sipCfg config.SIPConfig, oaiCfg config.OpenAIConfig, transfers map[string]string, oai *openai.Client, log *slog.Logger) (*Server, error) {
+func New(sipCfg config.SIPConfig, oaiCfg config.OpenAIConfig, transfers map[string]string, oai *openai.Client, log, oaiLog *slog.Logger) (*Server, error) {
 	ua, err := sipgo.NewUA(sipgo.WithUserAgent("sip2openai"))
 	if err != nil {
 		return nil, fmt.Errorf("new ua: %w", err)
@@ -74,6 +75,7 @@ func New(sipCfg config.SIPConfig, oaiCfg config.OpenAIConfig, transfers map[stri
 		oaiCfg:    oaiCfg,
 		transfers: transfers,
 		log:       log,
+		oaiLog:    oaiLog,
 		oai:       oai,
 		ua:        ua,
 		srv:       srv,
@@ -156,7 +158,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	// Register the call, then bring up the sideband control plane.
 	ac := &activeCall{dlg: dlg, oaiCallID: oaiCallID}
-	ctrl := s.oai.NewControl(oaiCallID, s.controlOpts(), log)
+	ctrl := s.oai.NewControl(oaiCallID, s.controlOpts(), s.oaiLog.With("callid", sipCallID))
 	ctrl.OnHangup = func() { s.endCall(sipCallID, true) }
 	ctrl.OnTransfer = func(uri string) {
 		log.Warn("transfer requested — SIP REFER not implemented yet (M3)", "uri", uri)
