@@ -6,6 +6,7 @@ package sip
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,10 @@ import (
 	"sip2openai/internal/openai"
 	sdpx "sip2openai/internal/sdp"
 )
+
+// configHeader is the SIP header carrying a per-call JSON config override.
+// Header lookup is case-insensitive, so "X-SIP2AI-CONFIG" also matches.
+const configHeader = "X-Sip2ai-Config"
 
 // activeCall holds the per-call resources we must tear down together.
 type activeCall struct {
@@ -36,10 +41,11 @@ type Server struct {
 	oaiLog    *slog.Logger // OpenAI sideband signaling (own log level)
 	oai       *openai.Client
 
-	ua  *sipgo.UserAgent
-	srv *sipgo.Server
-	cli *sipgo.Client
-	dlg *sipgo.DialogServerCache
+	ua      *sipgo.UserAgent
+	srv     *sipgo.Server
+	cli     *sipgo.Client
+	dlg     *sipgo.DialogServerCache
+	contact sip.ContactHeader // our Contact, used as Referred-By on REFER
 
 	mu    sync.Mutex
 	calls map[string]*activeCall // SIP Call-ID -> resources
@@ -81,11 +87,14 @@ func New(sipCfg config.SIPConfig, oaiCfg config.OpenAIConfig, transfers map[stri
 		srv:       srv,
 		cli:       cli,
 		dlg:       sipgo.NewDialogServerCache(cli, contact),
+		contact:   contact,
 		calls:     make(map[string]*activeCall),
 	}
 	srv.OnInvite(s.onInvite)
 	srv.OnAck(s.onAck)
 	srv.OnBye(s.onBye)
+	srv.OnRefer(s.onRefer)   // reject inbound REFER; we only send them
+	srv.OnNotify(s.onNotify) // consume REFER-progress sipfrag NOTIFYs
 	return s, nil
 }
 
@@ -124,6 +133,16 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 
+	// Per-call config override from the X-Sip2ai-Config header (if present).
+	oaiCfg, transfers := s.oaiCfg, s.transfers
+	if override, err := parseConfigHeader(req); err != nil {
+		log.Warn("bad "+configHeader+" header, using server config", "err", err)
+	} else if override != nil {
+		eff := config.Config{OpenAI: s.oaiCfg, Transfers: s.transfers}.WithOverride(override)
+		oaiCfg, transfers = eff.OpenAI, eff.Transfers
+		log.Info("per-call config override applied", "model", oaiCfg.Model, "voice", oaiCfg.Voice, "transfer_dests", len(transfers))
+	}
+
 	dlg, err := s.dlg.ReadInvite(req, tx)
 	if err != nil {
 		log.Error("ReadInvite failed", "err", err)
@@ -133,7 +152,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	// Make the telephony offer JSEP-idiomatic, then relay to OpenAI.
 	normOffer := sdpx.EnsureBundleMid(offer)
-	answer, oaiCallID, err := s.oai.CreateCall(dlg.Context(), normOffer)
+	answer, oaiCallID, err := s.oai.CreateCall(dlg.Context(), normOffer, oaiCfg.Model)
 	if err != nil {
 		code, reason := sip.StatusBadGateway, "OpenAI error"
 		var apiErr *openai.APIError
@@ -158,10 +177,19 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	// Register the call, then bring up the sideband control plane.
 	ac := &activeCall{dlg: dlg, oaiCallID: oaiCallID}
-	ctrl := s.oai.NewControl(oaiCallID, s.controlOpts(), s.oaiLog.With("callid", sipCallID))
+	ctrl := s.oai.NewControl(oaiCallID, s.controlOpts(oaiCfg, transfers), s.oaiLog.With("callid", sipCallID))
 	ctrl.OnHangup = func() { s.endCall(sipCallID, true) }
 	ctrl.OnTransfer = func(uri string) {
-		log.Warn("transfer requested — SIP REFER not implemented yet (M3)", "uri", uri)
+		// Fires from the sideband recv goroutine. Blind (unattended) transfer:
+		// REFER the caller to the destination; the caller places the new call
+		// directly and then tears our leg down (BYE / final sipfrag NOTIFY).
+		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer rcancel()
+		if err := s.sendRefer(rctx, dlg, uri); err != nil {
+			log.Error("SIP REFER failed", "err", err, "destination", uri)
+			return
+		}
+		log.Info("SIP REFER sent", "destination", uri)
 	}
 	ac.ctrl = ctrl
 
@@ -194,15 +222,30 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	s.endCall(sipCallID, false)
 }
 
-// controlOpts builds the per-call sideband session config from server config.
-func (s *Server) controlOpts() openai.ControlOptions {
+// parseConfigHeader extracts and JSON-parses the X-Sip2ai-Config header.
+// Returns (nil, nil) when the header is absent.
+func parseConfigHeader(req *sip.Request) (*config.CallOverride, error) {
+	h := req.GetHeader(configHeader)
+	if h == nil {
+		return nil, nil
+	}
+	var override config.CallOverride
+	if err := json.Unmarshal([]byte(h.Value()), &override); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", configHeader, err)
+	}
+	return &override, nil
+}
+
+// controlOpts builds the sideband session config from the effective per-call
+// OpenAI config and transfer destinations.
+func (s *Server) controlOpts(oaiCfg config.OpenAIConfig, transfers map[string]string) openai.ControlOptions {
 	return openai.ControlOptions{
-		Voice:        s.oaiCfg.Voice,
-		Instructions: s.oaiCfg.SystemPrompt,
-		Greeting:     s.oaiCfg.Greeting,
-		HangupDesc:   s.oaiCfg.HangupToolDesc,
-		TransferDesc: s.oaiCfg.TransferToolDesc,
-		Transfers:    s.transfers,
+		Voice:        oaiCfg.Voice,
+		Instructions: oaiCfg.SystemPrompt,
+		Greeting:     oaiCfg.Greeting,
+		HangupDesc:   oaiCfg.HangupToolDesc,
+		TransferDesc: oaiCfg.TransferToolDesc,
+		Transfers:    transfers,
 	}
 }
 

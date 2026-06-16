@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -94,7 +95,78 @@ func Load(path string) (Config, error) {
 		}
 	}
 	applyEnv(&cfg)
+	normalizeTransfers(cfg.Transfers)
 	return cfg, nil
+}
+
+// CallOverride carries per-call settings parsed from the X-Sip2ai-Config SIP
+// header (JSON). Only non-nil fields override the server config for that call.
+// Field names match the header keys. provider is accepted for compatibility
+// but ignored (sip2openai is OpenAI-only).
+type CallOverride struct {
+	Provider         *string           `json:"provider,omitempty"`
+	Model            *string           `json:"model,omitempty"`
+	Voice            *string           `json:"voice,omitempty"`
+	SystemPrompt     *string           `json:"prompt,omitempty"`
+	Greeting         *string           `json:"greeting,omitempty"`
+	HangupToolDesc   *string           `json:"hangup_tool_desc,omitempty"`
+	TransferToolDesc *string           `json:"transfer_tool_desc,omitempty"`
+	Transfers        map[string]string `json:"transfers,omitempty"`
+}
+
+// normalizeTransfers rewrites bare phone numbers into tel: URIs in place.
+// Values that already carry a URI scheme (e.g. "tel:", "sip:", "sips:") are
+// left untouched; a bare value is detected by the absence of a ":" separator.
+func normalizeTransfers(m map[string]string) {
+	for k, v := range m {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if !strings.Contains(v, ":") {
+			v = "tel:" + v
+		}
+		m[k] = v
+	}
+}
+
+// WithOverride returns a copy of cfg with o applied. The Transfers map is
+// deep-copied so the override never mutates the server's base config. A nil o
+// yields an unmodified (but still deep-copied) config.
+func (cfg Config) WithOverride(o *CallOverride) Config {
+	c := cfg // copy; maps are shared until reassigned below
+	if cfg.Transfers != nil {
+		c.Transfers = make(map[string]string, len(cfg.Transfers))
+		for k, v := range cfg.Transfers {
+			c.Transfers[k] = v
+		}
+	}
+	if o == nil {
+		return c
+	}
+	if o.Model != nil {
+		c.OpenAI.Model = *o.Model
+	}
+	if o.Voice != nil {
+		c.OpenAI.Voice = *o.Voice
+	}
+	if o.SystemPrompt != nil {
+		c.OpenAI.SystemPrompt = *o.SystemPrompt
+	}
+	if o.Greeting != nil {
+		c.OpenAI.Greeting = *o.Greeting
+	}
+	if o.HangupToolDesc != nil {
+		c.OpenAI.HangupToolDesc = *o.HangupToolDesc
+	}
+	if o.TransferToolDesc != nil {
+		c.OpenAI.TransferToolDesc = *o.TransferToolDesc
+	}
+	if o.Transfers != nil {
+		c.Transfers = o.Transfers
+		normalizeTransfers(c.Transfers)
+	}
+	return c
 }
 
 func applyEnv(cfg *Config) {

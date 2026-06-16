@@ -2,7 +2,7 @@ module sip2ai
 
 go 1.23.0
 
-toolchain go1.24.13
+toolchain go1.26.0
 
 require (
 	github.com/deepgram/deepgram-go-sdk/v3 v3.5.0

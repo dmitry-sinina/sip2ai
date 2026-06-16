@@ -64,8 +64,13 @@ func New(apiKey, model, baseURL, proxy string) (*Client, error) {
 // CreateCall posts a WebRTC SDP offer (Content-Type: application/sdp) and
 // returns OpenAI's SDP answer plus the call_id parsed from the Location header.
 // The call_id is the handle for the sideband control WebSocket (added in M2).
-func (c *Client) CreateCall(ctx context.Context, offer []byte) (answer []byte, callID string, err error) {
-	url := fmt.Sprintf("%s/v1/realtime/calls?model=%s", c.BaseURL, c.Model)
+// model overrides the client default for this call (empty = client default),
+// used for the per-call X-Sip2ai-Config override.
+func (c *Client) CreateCall(ctx context.Context, offer []byte, model string) (answer []byte, callID string, err error) {
+	if model == "" {
+		model = c.Model
+	}
+	url := fmt.Sprintf("%s/v1/realtime/calls?model=%s", c.BaseURL, model)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(offer))
 	if err != nil {
 		return nil, "", err

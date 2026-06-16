@@ -30,9 +30,15 @@ openai:
   transfer_tool_desc: "Transfer the caller to another department or person."
 
 # Optional transfer destinations (name -> SIP/tel URI). Enables transfer_call.
+# Bare numbers are auto-normalized to tel: URIs (e.g. "42" -> "tel:42").
 # transfers:
 #   support: "tel:+15551234567"
 #   sales: "sip:sales@example.com"
+
+# Per-call overrides: callers may send an X-SIP2AI-CONFIG SIP header on the
+# INVITE with a JSON body to override these settings for that call only. Keys:
+# model, voice, prompt, greeting, hangup_tool_desc, transfer_tool_desc,
+# transfers (provider is accepted but ignored; api_key is NOT overridable).
 
 log:
   level: info        # base: trace|debug|info|warn|error
