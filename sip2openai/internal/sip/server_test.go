@@ -1,6 +1,9 @@
 package sip
 
 import (
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/emiago/sipgo/sip"
@@ -43,6 +46,41 @@ func TestParseConfigHeader(t *testing.T) {
 	t.Run("malformed JSON errors", func(t *testing.T) {
 		if _, err := parseConfigHeader(mkReq(`{not json`, true)); err == nil {
 			t.Error("expected error for malformed JSON")
+		}
+	})
+}
+
+func TestErrorDetailsJSON(t *testing.T) {
+	t.Run("serializes error message", func(t *testing.T) {
+		got := errorDetailsJSON(errors.New("parse X-Sip2ai-Config: unexpected end of JSON input"))
+		var m map[string]string
+		if err := json.Unmarshal([]byte(got), &m); err != nil {
+			t.Fatalf("result is not valid JSON: %q: %v", got, err)
+		}
+		if m["error"] != "parse X-Sip2ai-Config: unexpected end of JSON input" {
+			t.Errorf("error field = %q", m["error"])
+		}
+	})
+
+	t.Run("strips CRLF so the value stays a single SIP header line", func(t *testing.T) {
+		got := errorDetailsJSON(errors.New("line one\r\nline two"))
+		if strings.ContainsAny(got, "\r\n") {
+			t.Errorf("value contains CR/LF: %q", got)
+		}
+		// Still valid JSON after stripping.
+		if err := json.Unmarshal([]byte(got), &map[string]string{}); err != nil {
+			t.Errorf("not valid JSON after CRLF strip: %q: %v", got, err)
+		}
+	})
+
+	t.Run("escapes quotes in the message", func(t *testing.T) {
+		got := errorDetailsJSON(errors.New(`bad "quoted" value`))
+		var m map[string]string
+		if err := json.Unmarshal([]byte(got), &m); err != nil {
+			t.Fatalf("result is not valid JSON: %q: %v", got, err)
+		}
+		if m["error"] != `bad "quoted" value` {
+			t.Errorf("error field = %q", m["error"])
 		}
 	})
 }

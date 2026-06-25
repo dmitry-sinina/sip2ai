@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,10 @@ import (
 // configHeader is the SIP header carrying a per-call JSON config override.
 // Header lookup is case-insensitive, so "X-SIP2AI-CONFIG" also matches.
 const configHeader = "X-Sip2ai-Config"
+
+// errorHeader carries JSON-serialized error details on rejection responses
+// (e.g. a malformed configHeader), so the caller can see why the INVITE failed.
+const errorHeader = "X-Sip2ai-Error"
 
 // activeCall holds the per-call resources we must tear down together.
 type activeCall struct {
@@ -134,10 +139,18 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 
 	// Per-call config override from the X-Sip2ai-Config header (if present).
+	// A malformed header is a client error: reject the INVITE rather than
+	// silently falling back to server config and starting a session.
 	oaiCfg, transfers := s.oaiCfg, s.transfers
-	if override, err := parseConfigHeader(req); err != nil {
-		log.Warn("bad "+configHeader+" header, using server config", "err", err)
-	} else if override != nil {
+	override, err := parseConfigHeader(req)
+	if err != nil {
+		log.Warn("bad "+configHeader+" header, rejecting INVITE", "err", err)
+		resp := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad Request", nil)
+		resp.AppendHeader(sip.NewHeader(errorHeader, errorDetailsJSON(err)))
+		_ = tx.Respond(resp)
+		return
+	}
+	if override != nil {
 		eff := config.Config{OpenAI: s.oaiCfg, Transfers: s.transfers}.WithOverride(override)
 		oaiCfg, transfers = eff.OpenAI, eff.Transfers
 		log.Info("per-call config override applied", "model", oaiCfg.Model, "voice", oaiCfg.Voice, "transfer_dests", len(transfers))
@@ -220,6 +233,19 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	s.log.With("callid", sipCallID).Info("call ended (caller BYE)")
 	s.endCall(sipCallID, false)
+}
+
+// errorDetailsJSON serializes err into a compact single-line JSON object for
+// the X-Sip2ai-Error response header. A SIP header value cannot contain CRLF,
+// so any newlines from the error are stripped; json.Marshal already escapes
+// other control characters and quotes. Marshaling cannot realistically fail
+// for a plain string, but on the off chance it does we fall back to a literal.
+func errorDetailsJSON(err error) string {
+	b, mErr := json.Marshal(map[string]string{"error": err.Error()})
+	if mErr != nil {
+		return `{"error":"serialization failed"}`
+	}
+	return strings.NewReplacer("\r", " ", "\n", " ").Replace(string(b))
 }
 
 // parseConfigHeader extracts and JSON-parses the X-Sip2ai-Config header.
