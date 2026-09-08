@@ -22,9 +22,22 @@ jobs:
         with:
           go-version: '1.26'
 
+      - name: Resolve version from release tag
+        run: |
+          # On release events GITHUB_REF_NAME is unreliable (empty when
+          # publishing a draft release); the tag lives in the event payload.
+          TAG="${{ github.event.release.tag_name }}"
+          if [ -z "${TAG}" ]; then
+            echo "::error::release tag_name is empty; cannot determine version" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "TAG=${TAG}" >> "${GITHUB_ENV}"
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "Resolved TAG=${TAG} VERSION=${VERSION}"
+
       - name: Set version from tag
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           sed -i "s/^version:.*/version: ${VERSION}/" deploy/helm/sip2ai/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deploy/helm/sip2ai/Chart.yaml
 
@@ -32,7 +45,6 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           go build -ldflags="-s -w -X main.version=${VERSION}" -o sip2ai ./cmd/sip2ai
           # sip2openai is a separate Go module; build it into build/ to avoid
           # colliding with the sip2openai/ source directory at the repo root.
@@ -40,7 +52,6 @@ jobs:
 
       - name: Build deb package
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           PKG_DIR="sip2ai_${VERSION}_amd64"
           mkdir -p "${PKG_DIR}/DEBIAN"
           mkdir -p "${PKG_DIR}/usr/bin"
@@ -112,8 +123,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          gh release upload "${GITHUB_REF_NAME}" "sip2ai_${VERSION}_amd64.deb"
+          gh release upload "${TAG}" "sip2ai_${VERSION}_amd64.deb"
 
       - name: Log in to container registry
         uses: docker/login-action@v3
@@ -128,9 +138,9 @@ jobs:
           context: .
           push: true
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ github.event.release.tag_name }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.release.tag_name }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
       - name: Package and push Helm chart

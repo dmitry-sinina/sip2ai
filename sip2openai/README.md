@@ -30,6 +30,7 @@ Implemented:
 - `udp_mtu` knob to clear sipgo's 1300 B UDP cap for large WebRTC answers.
 - **Sideband control WebSocket** per call: session config (system prompt + voice),
   greeting, token accounting, keepalive (idle-drop mitigation).
+- **Token usage reporting** to the caller via the `X-Sip2ai-Usage` header on BYE.
 - **`hangup_call`** tool → SIP BYE to the caller.
 
 Not yet (next milestones):
@@ -38,6 +39,28 @@ Not yet (next milestones):
 
 > `transfer_call` is surfaced over the sideband but currently only logged — the
 > REFER mapping lands in M3.
+
+## SIP headers
+
+| Header | Direction | Purpose |
+| --- | --- | --- |
+| `X-Sip2ai-Config` | INVITE (in) | Per-call JSON config override (prompt, voice, transfers). Malformed JSON is rejected with `400`. |
+| `X-Sip2ai-Error` | response (out) | JSON error details on a rejection, e.g. `{"error":"parse X-Sip2ai-Config: ..."}`. |
+| `X-Sip2ai-Usage` | BYE (out) / 200 OK to BYE (out) | The call's token totals. |
+
+Token totals are only final when the call ends, so `X-Sip2ai-Usage` cannot ride
+on the 200 OK to the INVITE — it goes on teardown instead, covering both hangup
+directions: the BYE we send when the model calls `hangup_call` (or after a
+completed transfer), and our 200 OK when the caller sends the BYE. The value is
+a single-line JSON object using OpenAI's own field names:
+
+```
+X-Sip2ai-Usage: {"total_tokens":1234,"input_tokens":900,"output_tokens":334,"input_text_tokens":120,"input_audio_tokens":780,"output_text_tokens":34,"output_audio_tokens":300}
+```
+
+The header is omitted when the call has no sideband control (it failed to come
+up), and reports zeros if the sideband produced no `response.done` events. The
+same totals are also logged at call end (`sideband closed`).
 
 ## Run
 

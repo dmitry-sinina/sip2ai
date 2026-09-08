@@ -62,16 +62,30 @@ type Control struct {
 
 	mu       sync.Mutex
 	lastRecv time.Time
-	usage    usage
+	usage    Usage
 
 	done      chan struct{}
 	closeOnce sync.Once
 }
 
-type usage struct {
-	total, input, output int
-	inText, inAudio      int
-	outText, outAudio    int
+// Usage is the running token tally for a call. The JSON tags are the wire
+// format of the X-Sip2ai-Usage SIP header, and mirror OpenAI's own field names.
+type Usage struct {
+	Total    int `json:"total_tokens"`
+	Input    int `json:"input_tokens"`
+	Output   int `json:"output_tokens"`
+	InText   int `json:"input_text_tokens"`
+	InAudio  int `json:"input_audio_tokens"`
+	OutText  int `json:"output_text_tokens"`
+	OutAudio int `json:"output_audio_tokens"`
+}
+
+// Usage returns a snapshot of the tokens tallied so far. Safe to call at any
+// time, including after Close (the totals are frozen once the WS is gone).
+func (ct *Control) Usage() Usage {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	return ct.usage
 }
 
 // NewControl builds a control client for an existing call_id. The WebSocket URL
@@ -140,12 +154,10 @@ func (ct *Control) Close() error {
 	if ct.conn == nil {
 		return nil
 	}
-	ct.mu.Lock()
-	u := ct.usage
-	ct.mu.Unlock()
+	u := ct.Usage()
 	ct.log.Info("sideband closed",
-		"total_tokens", u.total, "input_tokens", u.input, "output_tokens", u.output,
-		"input_audio_tokens", u.inAudio, "output_audio_tokens", u.outAudio)
+		"total_tokens", u.Total, "input_tokens", u.Input, "output_tokens", u.Output,
+		"input_audio_tokens", u.InAudio, "output_audio_tokens", u.OutAudio)
 	return ct.conn.Close(websocket.StatusNormalClosure, "")
 }
 
@@ -353,13 +365,13 @@ func (ct *Control) parseUsage(msg map[string]json.RawMessage) {
 	}
 	u := resp.Usage
 	ct.mu.Lock()
-	ct.usage.total += u.TotalTokens
-	ct.usage.input += u.InputTokens
-	ct.usage.output += u.OutputTokens
-	ct.usage.inText += u.InputDetail.TextTokens
-	ct.usage.inAudio += u.InputDetail.AudioTokens
-	ct.usage.outText += u.OutputDetail.TextTokens
-	ct.usage.outAudio += u.OutputDetail.AudioTokens
+	ct.usage.Total += u.TotalTokens
+	ct.usage.Input += u.InputTokens
+	ct.usage.Output += u.OutputTokens
+	ct.usage.InText += u.InputDetail.TextTokens
+	ct.usage.InAudio += u.InputDetail.AudioTokens
+	ct.usage.OutText += u.OutputDetail.TextTokens
+	ct.usage.OutAudio += u.OutputDetail.AudioTokens
 	ct.mu.Unlock()
 }
 
