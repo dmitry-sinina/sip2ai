@@ -30,6 +30,11 @@ const configHeader = "X-Sip2ai-Config"
 // (e.g. a malformed configHeader), so the caller can see why the INVITE failed.
 const errorHeader = "X-Sip2ai-Error"
 
+// usageHeader carries the call's JSON token totals. The totals are only final
+// when the call ends, so it rides on call teardown — the BYE we send on a
+// model-initiated hangup, and our 200 OK to a caller-initiated BYE.
+const usageHeader = "X-Sip2ai-Usage"
+
 // activeCall holds the per-call resources we must tear down together.
 type activeCall struct {
 	dlg       *sipgo.DialogServerSession
@@ -228,6 +233,14 @@ func (s *Server) onAck(req *sip.Request, tx sip.ServerTransaction) {
 
 func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	sipCallID := req.CallID().Value()
+	// ReadBye builds and sends the 200 OK itself, so wrap the transaction to
+	// stamp the usage header onto it. Look the call up before endCall drops it.
+	s.mu.Lock()
+	ac := s.calls[sipCallID]
+	s.mu.Unlock()
+	if h := usageHeaderFor(ac); h != nil {
+		tx = &headerTx{ServerTransaction: tx, extra: []sip.Header{h}}
+	}
 	if err := s.dlg.ReadBye(req, tx); err != nil {
 		s.log.Debug("ReadBye", "callid", sipCallID, "err", err)
 	}
@@ -246,6 +259,41 @@ func errorDetailsJSON(err error) string {
 		return `{"error":"serialization failed"}`
 	}
 	return strings.NewReplacer("\r", " ", "\n", " ").Replace(string(b))
+}
+
+// usageHeaderFor builds the X-Sip2ai-Usage header for a call, or nil when there
+// is nothing to report (no call, or its sideband control never came up).
+func usageHeaderFor(ac *activeCall) sip.Header {
+	if ac == nil || ac.ctrl == nil {
+		return nil
+	}
+	return sip.NewHeader(usageHeader, usageHeaderValue(ac.ctrl.Usage()))
+}
+
+// usageHeaderValue serializes token totals into a compact single-line JSON
+// object. The value is all integers, so it needs no CRLF scrubbing and cannot
+// realistically fail to marshal; an empty object is the fallback if it does.
+func usageHeaderValue(u openai.Usage) string {
+	b, err := json.Marshal(u)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// headerTx wraps a ServerTransaction so that extra headers are appended to
+// every response it sends. It lets us add headers to responses sipgo builds
+// internally (ReadBye's 200 OK), which we never get our hands on otherwise.
+type headerTx struct {
+	sip.ServerTransaction
+	extra []sip.Header
+}
+
+func (t *headerTx) Respond(res *sip.Response) error {
+	for _, h := range t.extra {
+		res.AppendHeader(h)
+	}
+	return t.ServerTransaction.Respond(res)
 }
 
 // parseConfigHeader extracts and JSON-parses the X-Sip2ai-Config header.
@@ -289,7 +337,7 @@ func (s *Server) endCall(sipCallID string, sendBye bool) {
 
 	if sendBye && ac.dlg != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := ac.dlg.Bye(ctx); err != nil {
+		if err := sendByeWithHeaders(ctx, ac.dlg, usageHeaderFor(ac)); err != nil {
 			log.Warn("send BYE failed", "err", err)
 		}
 		cancel()
@@ -306,4 +354,24 @@ func (s *Server) hangupOpenAI(callID string, log *slog.Logger) {
 	if err := s.oai.Hangup(ctx, callID); err != nil {
 		log.Warn("OpenAI hangup failed", "openai_call_id", callID, "err", err)
 	}
+}
+
+// sendByeWithHeaders sends the in-dialog BYE with extra headers attached. It
+// mirrors sipgo's DialogServerSession.Bye (request-URI = the caller's Contact,
+// same transport), which takes no headers of its own. nil headers are skipped;
+// if the caller's INVITE had no Contact we fall back to sipgo's own Bye.
+func sendByeWithHeaders(ctx context.Context, dlg *sipgo.DialogServerSession, extra ...sip.Header) error {
+	inv := dlg.InviteRequest
+	cont := inv.Contact()
+	if cont == nil {
+		return dlg.Bye(ctx)
+	}
+	bye := sip.NewRequest(sip.BYE, cont.Address)
+	bye.SetTransport(inv.Transport())
+	for _, h := range extra {
+		if h != nil {
+			bye.AppendHeader(h)
+		}
+	}
+	return dlg.WriteBye(ctx, bye)
 }
