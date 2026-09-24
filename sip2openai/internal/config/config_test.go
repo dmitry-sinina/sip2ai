@@ -19,7 +19,7 @@ func TestWithOverrideFromHeader(t *testing.T) {
 			Model:        "gpt-realtime",
 			Voice:        "verse",
 			SystemPrompt: "base prompt",
-			APIKey:       "sk-server", // must survive: api_key is not overridable
+			APIKey:       "sk-server", // must survive: this header carries no api_key
 		},
 		Transfers: map[string]string{"Frontdesk": "sip:fd@example.com"},
 	}
@@ -38,7 +38,7 @@ func TestWithOverrideFromHeader(t *testing.T) {
 		t.Errorf("tool descriptions not applied: %+v", got.OpenAI)
 	}
 	if got.OpenAI.APIKey != "sk-server" {
-		t.Errorf("api_key changed to %q; must stay sk-server", got.OpenAI.APIKey)
+		t.Errorf("api_key changed to %q; must stay sk-server when the header omits it", got.OpenAI.APIKey)
 	}
 
 	// Bare number normalized to tel:, and the override replaces the base map.
@@ -87,5 +87,83 @@ func TestWithOverrideNil(t *testing.T) {
 	got.Transfers["a"] = "mutated"
 	if base.Transfers["a"] != "tel:1" {
 		t.Errorf("nil override must still deep-copy transfers; base mutated to %q", base.Transfers["a"])
+	}
+}
+
+func TestWithOverrideAPIKey(t *testing.T) {
+	var o CallOverride
+	if err := json.Unmarshal([]byte(`{"api_key":"sk-caller","voice":"verse"}`), &o); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	base := Config{OpenAI: OpenAIConfig{APIKey: "sk-server", Voice: "alloy"}}
+	got := base.WithOverride(&o)
+
+	if got.OpenAI.APIKey != "sk-caller" {
+		t.Errorf("api_key = %q, want sk-caller", got.OpenAI.APIKey)
+	}
+	if got.OpenAI.Voice != "verse" {
+		t.Errorf("voice = %q, want verse", got.OpenAI.Voice)
+	}
+	if base.OpenAI.APIKey != "sk-server" {
+		t.Errorf("base api_key mutated to %q", base.OpenAI.APIKey)
+	}
+
+	t.Run("surrounding whitespace is trimmed", func(t *testing.T) {
+		padded := " \tsk-caller \n"
+		got := base.WithOverride(&CallOverride{APIKey: &padded})
+		if got.OpenAI.APIKey != "sk-caller" {
+			t.Errorf("api_key = %q, want sk-caller with the padding stripped", got.OpenAI.APIKey)
+		}
+	})
+}
+
+func TestWithOverrideGreetingDelay(t *testing.T) {
+	base := Default()
+	if base.OpenAI.GreetingDelayMs != 1000 {
+		t.Fatalf("default greeting_delay_ms = %d, want 1000", base.OpenAI.GreetingDelayMs)
+	}
+
+	var o CallOverride
+	if err := json.Unmarshal([]byte(`{"greeting_delay_ms":250}`), &o); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := base.WithOverride(&o).OpenAI.GreetingDelayMs; got != 250 {
+		t.Errorf("greeting_delay_ms = %d, want 250", got)
+	}
+
+	// Explicit zero must win over the default, not be treated as "unset".
+	zero := 0
+	if got := base.WithOverride(&CallOverride{GreetingDelayMs: &zero}).OpenAI.GreetingDelayMs; got != 0 {
+		t.Errorf("greeting_delay_ms = %d, want 0 from an explicit override", got)
+	}
+	if base.OpenAI.GreetingDelayMs != 1000 {
+		t.Errorf("base greeting_delay_ms mutated to %d", base.OpenAI.GreetingDelayMs)
+	}
+}
+
+func TestCallOverrideValidate(t *testing.T) {
+	str := func(s string) *string { return &s }
+	num := func(n int) *int { return &n }
+	cases := []struct {
+		name    string
+		o       *CallOverride
+		wantErr bool
+	}{
+		{"nil override", nil, false},
+		{"no api_key", &CallOverride{Voice: str("alloy")}, false},
+		{"api_key set", &CallOverride{APIKey: str("sk-caller")}, false},
+		{"api_key empty", &CallOverride{APIKey: str("")}, true},
+		{"api_key blank", &CallOverride{APIKey: str("  \t ")}, true},
+		{"greeting_delay_ms zero", &CallOverride{GreetingDelayMs: num(0)}, false},
+		{"greeting_delay_ms positive", &CallOverride{GreetingDelayMs: num(1500)}, false},
+		{"greeting_delay_ms negative", &CallOverride{GreetingDelayMs: num(-1)}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.o.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
 	}
 }

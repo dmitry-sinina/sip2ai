@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,10 @@ type activeCall struct {
 	dlg       *sipgo.DialogServerSession
 	ctrl      *openai.Control
 	oaiCallID string
+	// oai is the client the call was created with. It differs from the
+	// server's when the caller supplied its own api_key, and the hangup must
+	// go out under the same credentials.
+	oai *openai.Client
 }
 
 // Server is a signaling-only UAS bridging SIP calls to OpenAI Realtime.
@@ -158,7 +163,17 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	if override != nil {
 		eff := config.Config{OpenAI: s.oaiCfg, Transfers: s.transfers}.WithOverride(override)
 		oaiCfg, transfers = eff.OpenAI, eff.Transfers
-		log.Info("per-call config override applied", "model", oaiCfg.Model, "voice", oaiCfg.Voice, "transfer_dests", len(transfers))
+		log.Info("per-call config override applied", "model", oaiCfg.Model, "voice", oaiCfg.Voice,
+			"transfer_dests", len(transfers), "api_key_override", override.APIKey != nil)
+	}
+	// Per-call client: the server's unless the caller overrode api_key, in
+	// which case every OpenAI request for this call (offer, sideband, hangup)
+	// authenticates with the effective (validated, trimmed) key instead. The
+	// fallback to server credentials is decided here and nowhere else.
+	callerKey := override != nil && override.APIKey != nil
+	oai := s.oai
+	if callerKey {
+		oai = s.oai.WithAPIKey(oaiCfg.APIKey)
 	}
 
 	dlg, err := s.dlg.ReadInvite(req, tx)
@@ -170,15 +185,11 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	// Make the telephony offer JSEP-idiomatic, then relay to OpenAI.
 	normOffer := sdpx.EnsureBundleMid(offer)
-	answer, oaiCallID, err := s.oai.CreateCall(dlg.Context(), normOffer, oaiCfg.Model)
+	answer, oaiCallID, err := oai.CreateCall(dlg.Context(), normOffer, oaiCfg.Model)
 	if err != nil {
-		code, reason := sip.StatusBadGateway, "OpenAI error"
-		var apiErr *openai.APIError
-		if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
-			code, reason = sip.StatusNotAcceptableHere, "OpenAI rejected offer"
-		}
-		log.Error("CreateCall failed", "err", err)
-		_ = dlg.Respond(code, reason, nil)
+		code, reason, detail := createCallStatus(err, callerKey)
+		log.Error("CreateCall failed", "err", err, "status", code)
+		_ = dlg.Respond(code, reason, nil, sip.NewHeader(errorHeader, errorDetailsJSON(detail)))
 		return
 	}
 	log.Info("OpenAI call created", "openai_call_id", oaiCallID, "answer_bytes", len(answer))
@@ -188,14 +199,18 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	answerForClient := sdpx.StripBundleMid(answer)
 	if err := dlg.RespondSDP(answerForClient); err != nil {
 		log.Error("send 200 OK failed", "err", err, "bytes", len(answerForClient))
-		s.hangupOpenAI(oaiCallID, log)
+		hangupOpenAI(oai, oaiCallID, log)
 		return
 	}
-	log.Info("call answered — media direct to OpenAI", "answer_bytes", len(answerForClient))
+	// RespondSDP retransmits the 200 OK until the caller's ACK and returns
+	// only then, so this is the ACK time: the earliest the caller can have
+	// started ICE/DTLS towards OpenAI, and the reference for the greeting delay.
+	ackedAt := time.Now()
+	log.Info("call answered (ACKed) — media direct to OpenAI", "answer_bytes", len(answerForClient))
 
 	// Register the call, then bring up the sideband control plane.
-	ac := &activeCall{dlg: dlg, oaiCallID: oaiCallID}
-	ctrl := s.oai.NewControl(oaiCallID, s.controlOpts(oaiCfg, transfers), s.oaiLog.With("callid", sipCallID))
+	ac := &activeCall{dlg: dlg, oaiCallID: oaiCallID, oai: oai}
+	ctrl := oai.NewControl(oaiCallID, s.controlOpts(oaiCfg, transfers), s.oaiLog.With("callid", sipCallID))
 	ctrl.OnHangup = func() { s.endCall(sipCallID, true) }
 	ctrl.OnTransfer = func(uri string) {
 		// Fires from the sideband recv goroutine. Blind (unattended) transfer:
@@ -220,9 +235,15 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	cancel()
 	if startErr != nil {
 		log.Warn("sideband control failed to start (call continues, no prompt/greeting)", "err", startErr)
-	} else {
-		log.Info("sideband control up")
+		return
 	}
+	log.Info("sideband control up", "greeting_delay_ms", oaiCfg.GreetingDelayMs)
+	// Hold the greeting until greeting_delay_ms after the ACK: media is set up
+	// caller<->OpenAI out of our sight, and speaking before it is up clips the
+	// greeting. The sideband dial above already consumed part of that window,
+	// so the delay is anchored at ackedAt rather than now.
+	delay := time.Duration(oaiCfg.GreetingDelayMs) * time.Millisecond
+	ctrl.GreetAfter(time.Until(ackedAt.Add(delay)))
 }
 
 func (s *Server) onAck(req *sip.Request, tx sip.ServerTransaction) {
@@ -246,6 +267,41 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	s.log.With("callid", sipCallID).Info("call ended (caller BYE)")
 	s.endCall(sipCallID, false)
+}
+
+// createCallStatus maps a CreateCall failure to the INVITE's final response
+// and to the error that goes into the X-Sip2ai-Error header. OpenAI's HTTP
+// status is the only signal, and with the per-call api_key override a bad key
+// or a throttled account is the failure callers actually hit, so those get
+// their own codes instead of masquerading as an SDP problem:
+//
+//	401/403, caller's key -> 403 Forbidden
+//	401/403, server's key -> 502 Bad Gateway (gateway misconfigured, not the caller)
+//	429                   -> 480 Temporarily Unavailable (retry later)
+//	other 4xx             -> 488 Not Acceptable Here (offer rejected)
+//	anything else         -> 502 Bad Gateway
+//
+// When the server's own key is rejected the detail is the reason alone:
+// OpenAI's message echoes a masked form of the key, which is not the
+// caller's to see.
+func createCallStatus(err error, callerKey bool) (code int, reason string, detail error) {
+	var apiErr *openai.APIError
+	if !errors.As(err, &apiErr) {
+		return sip.StatusBadGateway, "OpenAI error", err
+	}
+	switch {
+	case apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden:
+		if callerKey {
+			return sip.StatusForbidden, "OpenAI rejected api_key", err
+		}
+		reason = "OpenAI rejected server credentials"
+		return sip.StatusBadGateway, reason, errors.New(reason)
+	case apiErr.Status == http.StatusTooManyRequests:
+		return sip.StatusTemporarilyUnavailable, "OpenAI rate limited", err
+	case apiErr.Status >= 400 && apiErr.Status < 500:
+		return sip.StatusNotAcceptableHere, "OpenAI rejected offer", err
+	}
+	return sip.StatusBadGateway, "OpenAI error", err
 }
 
 // errorDetailsJSON serializes err into a compact single-line JSON object for
@@ -307,6 +363,9 @@ func parseConfigHeader(req *sip.Request) (*config.CallOverride, error) {
 	if err := json.Unmarshal([]byte(h.Value()), &override); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", configHeader, err)
 	}
+	if err := override.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", configHeader, err)
+	}
 	return &override, nil
 }
 
@@ -345,13 +404,19 @@ func (s *Server) endCall(sipCallID string, sendBye bool) {
 	if ac.ctrl != nil {
 		_ = ac.ctrl.Close()
 	}
-	s.hangupOpenAI(ac.oaiCallID, log)
+	hangupOpenAI(ac.oai, ac.oaiCallID, log)
 }
 
-func (s *Server) hangupOpenAI(callID string, log *slog.Logger) {
+// hangupOpenAI ends the OpenAI leg via oai, which must be the client the call
+// was created with so the hangup carries the same api_key. An empty callID
+// (the call never reached OpenAI) is a no-op.
+func hangupOpenAI(oai *openai.Client, callID string, log *slog.Logger) {
+	if callID == "" {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.oai.Hangup(ctx, callID); err != nil {
+	if err := oai.Hangup(ctx, callID); err != nil {
 		log.Warn("OpenAI hangup failed", "openai_call_id", callID, "err", err)
 	}
 }

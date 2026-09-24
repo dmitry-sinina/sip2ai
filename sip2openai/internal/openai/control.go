@@ -63,6 +63,10 @@ type Control struct {
 	mu       sync.Mutex
 	lastRecv time.Time
 	usage    Usage
+	// callerSpoke is set once server VAD reports caller speech. A greeting
+	// still pending at that point is dropped: the model already answers the
+	// caller, and a scripted greeting on top would talk over that turn.
+	callerSpoke bool
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -117,9 +121,10 @@ func wsURLFromBase(base, callID string) string {
 	return fmt.Sprintf("%s/v1/realtime?call_id=%s", strings.TrimRight(base, "/"), callID)
 }
 
-// Start dials the sideband WS, applies session config, fires the greeting, and
-// launches the receive + keepalive loops. It returns an error only if the
-// initial dial/config fails; the call's media is unaffected either way.
+// Start dials the sideband WS, applies session config, and launches the
+// receive + keepalive loops. It returns an error only if the initial
+// dial/config fails; the call's media is unaffected either way. The greeting
+// is not spoken here — see GreetAfter.
 func (ct *Control) Start(ctx context.Context) error {
 	conn, _, err := websocket.Dial(ctx, ct.wsURL, &websocket.DialOptions{
 		HTTPClient: ct.httpClient,
@@ -138,14 +143,43 @@ func (ct *Control) Start(ctx context.Context) error {
 		conn.Close(websocket.StatusInternalError, "")
 		return fmt.Errorf("session.update: %w", err)
 	}
-	if ct.opts.Greeting != "" {
-		ct.sendResponseCreate(ctx, "Say the following greeting to the caller, then wait for their response: "+ct.opts.Greeting)
-		ct.log.Debug("greeting triggered", "greeting", ct.opts.Greeting)
-	}
 
 	go ct.recvLoop()
 	go ct.keepalive()
 	return nil
+}
+
+// GreetAfter speaks the configured greeting once d has elapsed (d <= 0 means
+// now). The gateway never sees media come up — ICE and DTLS run between the
+// caller and OpenAI — so the caller's ACK plus a configured delay is the best
+// available "media is ready" signal, and speaking earlier clips the greeting.
+// No-op without a greeting or before Start. The greeting is dropped if the
+// caller speaks first (server VAD already answers them) or the control is
+// closed before d elapses.
+func (ct *Control) GreetAfter(d time.Duration) {
+	if ct.opts.Greeting == "" || ct.conn == nil {
+		return
+	}
+	go func() {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-ct.done:
+			return
+		case <-timer.C:
+		}
+		ct.mu.Lock()
+		spoke := ct.callerSpoke
+		ct.mu.Unlock()
+		if spoke {
+			ct.log.Info("greeting skipped: caller spoke first")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ct.sendResponseCreate(ctx, "Say the following greeting to the caller, then wait for their response: "+ct.opts.Greeting)
+		ct.log.Info("greeting triggered", "delay", d, "greeting", ct.opts.Greeting)
+	}()
 }
 
 // Close tears down the sideband WS and logs the call's token usage.
@@ -240,6 +274,11 @@ func (ct *Control) recvLoop() {
 			ct.handleOutputItem(msg)
 		case "response.done":
 			ct.parseUsage(msg)
+		case "input_audio_buffer.speech_started":
+			ct.mu.Lock()
+			ct.callerSpoke = true
+			ct.mu.Unlock()
+			ct.log.Debug("sideband event", "type", t)
 		case "error":
 			raw, _ := json.Marshal(msg)
 			ct.log.Warn("sideband server error event", "raw", string(raw))

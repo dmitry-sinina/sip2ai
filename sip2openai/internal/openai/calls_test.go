@@ -196,3 +196,57 @@ func TestCreateCallViaProxy(t *testing.T) {
 		t.Errorf("callID = %q", callID)
 	}
 }
+
+func TestWithAPIKey(t *testing.T) {
+	var gotAuth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		w.Header().Set("Location", "/v1/realtime/calls/rtc_1")
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	base, err := New("sk-server", "gpt-realtime", srv.URL, "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	t.Run("empty key does not inherit the base key", func(t *testing.T) {
+		got := base.WithAPIKey("")
+		if got == base {
+			t.Fatal("WithAPIKey(\"\") returned the base client; an empty key must not fall back to its credentials")
+		}
+		if got.APIKey != "" {
+			t.Errorf("APIKey = %q, want empty", got.APIKey)
+		}
+	})
+
+	t.Run("same key returns the same client", func(t *testing.T) {
+		if got := base.WithAPIKey("sk-server"); got != base {
+			t.Errorf("WithAPIKey(same) returned a copy, want the same client")
+		}
+	})
+
+	t.Run("override is used for offer and hangup, base untouched", func(t *testing.T) {
+		gotAuth = nil
+		c := base.WithAPIKey("sk-caller")
+		if c == base {
+			t.Fatal("WithAPIKey(other) returned the base client")
+		}
+		if c.Model != base.Model || c.BaseURL != base.BaseURL || c.HTTP != base.HTTP {
+			t.Errorf("override client must share model/base URL/HTTP client: %+v vs %+v", c, base)
+		}
+		if _, _, err := c.CreateCall(context.Background(), []byte("o"), ""); err != nil {
+			t.Fatalf("CreateCall: %v", err)
+		}
+		if err := c.Hangup(context.Background(), "rtc_1"); err != nil {
+			t.Fatalf("Hangup: %v", err)
+		}
+		if len(gotAuth) != 2 || gotAuth[0] != "Bearer sk-caller" || gotAuth[1] != "Bearer sk-caller" {
+			t.Errorf("auth headers = %q, want Bearer sk-caller on both requests", gotAuth)
+		}
+		if base.APIKey != "sk-server" {
+			t.Errorf("base client key mutated to %q", base.APIKey)
+		}
+	})
+}

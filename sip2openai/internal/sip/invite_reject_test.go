@@ -12,11 +12,24 @@ import (
 	"github.com/emiago/sipgo/sip"
 )
 
-// TestInviteMalformedConfigRejected drives a real INVITE carrying a malformed
+// TestInviteBadConfigRejected drives a real INVITE carrying an unusable
 // X-Sip2ai-Config header into our onInvite handler and asserts the UAS replies
 // 400 Bad Request with the error details in the X-Sip2ai-Error header — and
 // that no dialog/session is established.
-func TestInviteMalformedConfigRejected(t *testing.T) {
+func TestInviteBadConfigRejected(t *testing.T) {
+	cases := []struct {
+		name, header string
+	}{
+		{"malformed JSON", `{not json`},
+		{"empty api_key", `{"api_key":""}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) { assertInviteRejected(t, tc.header) })
+	}
+}
+
+func assertInviteRejected(t *testing.T, header string) {
+	t.Helper()
 	sip.SetDefaultLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	// --- UAS (our side): only the reject path of onInvite runs. ---
@@ -40,7 +53,7 @@ func TestInviteMalformedConfigRejected(t *testing.T) {
 	req.SetDestination(uasURI.HostPort())
 	// Non-empty SDP so we pass the missing-offer check and reach config parsing.
 	req.SetBody([]byte("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 2 RTP/AVP 0\r\n"))
-	req.AppendHeader(sip.NewHeader(configHeader, `{not json`))
+	req.AppendHeader(sip.NewHeader(configHeader, header))
 
 	tx, err := uacCli.TransactionRequest(ctx, req)
 	if err != nil {

@@ -48,6 +48,26 @@ func TestParseConfigHeader(t *testing.T) {
 			t.Error("expected error for malformed JSON")
 		}
 	})
+
+	t.Run("api_key parses", func(t *testing.T) {
+		o, err := parseConfigHeader(mkReq(`{"api_key":"sk-caller"}`, true))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if o.APIKey == nil || *o.APIKey != "sk-caller" {
+			t.Errorf("api_key = %v, want sk-caller", o.APIKey)
+		}
+	})
+
+	t.Run("empty api_key is rejected", func(t *testing.T) {
+		_, err := parseConfigHeader(mkReq(`{"api_key":""}`, true))
+		if err == nil {
+			t.Fatal("expected error for empty api_key")
+		}
+		if !strings.Contains(err.Error(), "api_key") {
+			t.Errorf("error %q should name api_key", err)
+		}
+	})
 }
 
 func TestErrorDetailsJSON(t *testing.T) {

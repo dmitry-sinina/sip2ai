@@ -93,6 +93,7 @@ sip2openai:
       voice: "alloy"
       system_prompt: "You are a helpful voice assistant on a phone call. Keep replies concise."
       greeting: "Hello! How can I help you today?"
+      greeting_delay_ms: 1000  # after the caller's ACK; covers ICE/DTLS setup so the greeting is not clipped
       hangup_tool_desc: "End the call when the conversation is complete or the caller asks to hang up."
       transfer_tool_desc: "Transfer the caller to another department or person."
     log:

@@ -26,6 +26,11 @@ openai:
   voice: alloy
   system_prompt: "You are a helpful voice assistant on a phone call. Keep replies concise."
   greeting: "Hello! How can I help you today?"
+  # Wait this long after the caller's ACK before the model speaks the greeting.
+  # ICE and DTLS complete between the caller and OpenAI out of our sight, and a
+  # greeting spoken before media is up loses its first words. Raise it if
+  # callers still miss the first words; 0 speaks as soon as the sideband is up.
+  greeting_delay_ms: 1000
   hangup_tool_desc: "End the call when the conversation is complete or the caller asks to hang up."
   transfer_tool_desc: "Transfer the caller to another department or person."
 
@@ -37,8 +42,12 @@ openai:
 
 # Per-call overrides: callers may send an X-SIP2AI-CONFIG SIP header on the
 # INVITE with a JSON body to override these settings for that call only. Keys:
-# model, voice, prompt, greeting, hangup_tool_desc, transfer_tool_desc,
-# transfers (provider is accepted but ignored; api_key is NOT overridable).
+# api_key, model, voice, prompt, greeting, greeting_delay_ms, hangup_tool_desc,
+# transfer_tool_desc, transfers (provider is accepted but ignored). An api_key override is used for
+# every OpenAI request of that call (SDP offer, sideband WebSocket, hangup);
+# a blank api_key rejects the INVITE with 400, one OpenAI rejects gets 403.
+# The header travels in cleartext (no SIP TLS): accept it only from a trusted
+# hop, and note that log.sip: debug dumps full SIP messages, header included.
 
 log:
   level: info        # base: trace|debug|info|warn|error

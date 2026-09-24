@@ -47,13 +47,19 @@ type OpenAIConfig struct {
 	Greeting         string `yaml:"greeting"`           // spoken first if non-empty
 	HangupToolDesc   string `yaml:"hangup_tool_desc"`   // hangup_call tool description
 	TransferToolDesc string `yaml:"transfer_tool_desc"` // transfer_call tool description
+	// GreetingDelayMs holds the greeting back this long after the caller's ACK.
+	// ICE and DTLS run caller<->OpenAI out of our sight, and a greeting spoken
+	// before media is up loses its first words. 0 speaks as soon as the
+	// sideband is up.
+	GreetingDelayMs int `yaml:"greeting_delay_ms"`
 }
 
 type LogConfig struct {
 	Level  string `yaml:"level"`  // base: trace|debug|info|warn|error
 	Format string `yaml:"format"` // text|json
 	// Per-component levels; empty falls back to Level. SIP controls the sipgo
-	// stack (full SIP message dumps at debug, FSM traces at trace); OpenAI
+	// stack (full SIP message dumps at debug, X-Sip2ai-Config and any api_key
+	// in it included; FSM traces at trace); OpenAI
 	// controls sideband signaling (full WS event payloads at trace).
 	SIP    string `yaml:"sip"`
 	OpenAI string `yaml:"openai"`
@@ -74,6 +80,7 @@ func Default() Config {
 			Voice:            "alloy",
 			HangupToolDesc:   "End the call when the conversation is complete or the caller asks to hang up.",
 			TransferToolDesc: "Transfer the caller to another department or person.",
+			GreetingDelayMs:  1000,
 		},
 		Log: LogConfig{Level: "info", Format: "text"},
 	}
@@ -102,16 +109,38 @@ func Load(path string) (Config, error) {
 // CallOverride carries per-call settings parsed from the X-Sip2ai-Config SIP
 // header (JSON). Only non-nil fields override the server config for that call.
 // Field names match the header keys. provider is accepted for compatibility
-// but ignored (sip2openai is OpenAI-only).
+// but ignored (sip2openai is OpenAI-only). api_key replaces the server's
+// OpenAI key for every request made on behalf of the call (SDP offer,
+// sideband WebSocket, hangup); it must be non-blank when present, and
+// surrounding whitespace is trimmed.
 type CallOverride struct {
 	Provider         *string           `json:"provider,omitempty"`
+	APIKey           *string           `json:"api_key,omitempty"`
 	Model            *string           `json:"model,omitempty"`
 	Voice            *string           `json:"voice,omitempty"`
 	SystemPrompt     *string           `json:"prompt,omitempty"`
 	Greeting         *string           `json:"greeting,omitempty"`
+	GreetingDelayMs  *int              `json:"greeting_delay_ms,omitempty"`
 	HangupToolDesc   *string           `json:"hangup_tool_desc,omitempty"`
 	TransferToolDesc *string           `json:"transfer_tool_desc,omitempty"`
 	Transfers        map[string]string `json:"transfers,omitempty"`
+}
+
+// Validate rejects override values that cannot possibly work for a call, so
+// the INVITE fails up front instead of starting a broken session: a blank
+// api_key (every OpenAI request would fail with 401) and a negative
+// greeting_delay_ms.
+func (o *CallOverride) Validate() error {
+	if o == nil {
+		return nil
+	}
+	if o.APIKey != nil && strings.TrimSpace(*o.APIKey) == "" {
+		return fmt.Errorf("api_key must not be empty")
+	}
+	if o.GreetingDelayMs != nil && *o.GreetingDelayMs < 0 {
+		return fmt.Errorf("greeting_delay_ms must not be negative")
+	}
+	return nil
 }
 
 // normalizeTransfers rewrites bare phone numbers into tel: URIs in place.
@@ -144,6 +173,11 @@ func (cfg Config) WithOverride(o *CallOverride) Config {
 	if o == nil {
 		return c
 	}
+	if o.APIKey != nil {
+		// Validate checks the trimmed value, so apply the same here or a padded
+		// key would pass validation and then fail at OpenAI with 401.
+		c.OpenAI.APIKey = strings.TrimSpace(*o.APIKey)
+	}
 	if o.Model != nil {
 		c.OpenAI.Model = *o.Model
 	}
@@ -155,6 +189,9 @@ func (cfg Config) WithOverride(o *CallOverride) Config {
 	}
 	if o.Greeting != nil {
 		c.OpenAI.Greeting = *o.Greeting
+	}
+	if o.GreetingDelayMs != nil {
+		c.OpenAI.GreetingDelayMs = *o.GreetingDelayMs
 	}
 	if o.HangupToolDesc != nil {
 		c.OpenAI.HangupToolDesc = *o.HangupToolDesc

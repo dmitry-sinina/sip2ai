@@ -61,6 +61,22 @@ func New(apiKey, model, baseURL, proxy string) (*Client, error) {
 	}, nil
 }
 
+// WithAPIKey returns a client that authenticates with apiKey but otherwise
+// shares everything (model, base URL, HTTP client, proxy) with c. It backs the
+// per-call X-Sip2ai-Config api_key override: every request made for that call
+// (SDP offer, sideband WebSocket, hangup) goes through the returned client.
+// The key is applied verbatim: an empty apiKey yields a client whose requests
+// fail with 401 rather than one that quietly inherits c's credentials, so the
+// decision to fall back to the server key stays with the caller.
+func (c *Client) WithAPIKey(apiKey string) *Client {
+	if apiKey == c.APIKey {
+		return c
+	}
+	cp := *c
+	cp.APIKey = apiKey
+	return &cp
+}
+
 // CreateCall posts a WebRTC SDP offer (Content-Type: application/sdp) and
 // returns OpenAI's SDP answer plus the call_id parsed from the Location header.
 // The call_id is the handle for the sideband control WebSocket (added in M2).
